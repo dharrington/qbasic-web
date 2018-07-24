@@ -1,0 +1,15 @@
+{
+    "compilerOptions": {
+        "outDir": "./built",
+        "allowJs": true,
+        "target": "es6",
+        "sourceMap": true,
+        "module": "commonjs",
+        "strictFunctionTypes": true,
+        "strictPropertyInitialization": true,
+    },
+    "include": [
+        "./src/*.ts",
+        "./src/test/*.ts"
+    ]
+}
