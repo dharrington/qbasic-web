@@ -19,13 +19,13 @@ import {
     kSingleType, kStringType, sigilToBaseType, Type, UserTypeField,
 } from "./types";
 
-export function basicType(b: BaseType): Type {
+export function basicType(b?: BaseType): Type | undefined {
     if (b === BaseType.kInt) return kIntType;
     if (b === BaseType.kString) return kStringType;
     if (b === BaseType.kLongInt) return kLongType;
     if (b === BaseType.kNone || b === BaseType.kSingle) return kSingleType;
     if (b === BaseType.kDouble) return kDoubleType;
-    return null;
+    return undefined;
 }
 
 export enum ValKind {
@@ -153,7 +153,7 @@ export interface ICtx {
     endsub();
     declSub(id: Token, args: Val[]);
     isSub(id: string): boolean;
-    lookupFunction(id: string): FunctionType;
+    lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]);
     callFunction(id: string, args: Val[]): Val;
     input(keepCursor: boolean, prompt: string, args: Val[]);
@@ -182,12 +182,11 @@ export interface ICtx {
 
 // A minimal implementation of ICtx that can parse code.
 export class NullCtx implements ICtx {
-    private types: Map<string, Type>;
-    private dimVars: Map<string, Val>;
-    private autoVars: Map<string, Val>;
-    private subs: Map<string, Val>;
+    private types: Map<string, Type> = new Map<string, Type>();
+    private dimVars: Map<string, Val> = new Map<string, Val>();
+    private autoVars: Map<string, Val> = new Map<string, Val>();
+    private subs: Map<string, Val> = new Map<string, Val>();
 
-    private currentSubDecl: string;
     finalize() { }
     error(message: string, loc: Location) {
         console.log(message + " at " + loc.toString());
@@ -211,9 +210,7 @@ export class NullCtx implements ICtx {
     label(tok: Token) { }
     lineNumber(num: number, tok: Token) { }
     newline(num: number) { }
-    data(dataArray: Val[]) {
-
-    }
+    data(dataArray: Val[]) { }
     variable(varName: Token, baseType?: BaseType): Val {
         const dimVar = this.dimVars.get(varName.text);
         if (dimVar) {
@@ -264,15 +261,14 @@ export class NullCtx implements ICtx {
 
     }
     declSub(id: Token, args: Val[]) {
-        this.currentSubDecl = id.text;
     }
     isSub(id: string): boolean {
         return this.subs.has(id);
     }
     callSub(id: Token, args: Val[]) { }
     callFunction(id: string, args: Val[]): Val { return kNullVal; }
-    lookupFunction(id: string): FunctionType {
-        return null;
+    lookupFunction(id: string): FunctionType | undefined {
+        return undefined;
     }
     input(keepCursor: boolean, prompt: string, args: Val[]) { }
     ifBegin(cond: Val) { }

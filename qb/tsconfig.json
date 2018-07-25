@@ -7,6 +7,7 @@
         "module": "commonjs",
         "strictFunctionTypes": true,
         "strictPropertyInitialization": true,
+        // TODO: "strictNullChecks": true
     },
     "include": [
         "./src/*.ts",
