@@ -5,8 +5,7 @@
         "target": "es6",
         "sourceMap": true,
         "module": "commonjs",
-        "strictFunctionTypes": true,
-        "strictPropertyInitialization": true,
+        "strictFunctionTypes": true
         // TODO: "strictNullChecks": true
     },
     "include": [

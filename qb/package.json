@@ -9,6 +9,10 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "fs": "0.0.1-security",
     "typescript": "^2.9.2"
+  },
+  "devDependencies": {
+    "@types/node": "^10.5.3"
   }
 }

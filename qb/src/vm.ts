@@ -367,6 +367,15 @@ function formatFloatSingle(n: number): string {
     return n.toPrecision(7);
 }
 
+function fixupNumberForPrinting(n: string): string {
+    if (n.startsWith("-0.")) n = "-." + n.substr(2);
+    else if (n.startsWith("0.")) n = n.substr(1);
+    if (!n.startsWith("-")) {
+        n = " " + n;
+    }
+    return n + " ";
+}
+
 export class Execution {
     // Stack addressed by non-negative numbers.
     public stack: any[] = [];
@@ -417,14 +426,13 @@ export class Execution {
     push(v: any) {
         this.stack.push(v);
     }
-    run() {
+    run(maxSteps = 100000) {
         this.inRun = true;
         // Run at most this many operations, so that we don't freeze the UI entirely.
-        const batchSize = 100000;
         let i = 0;
-        for (i = 0; i < batchSize && !this.exception && !this.waiting && this.step(); i++) {
+        for (i = 0; i < maxSteps && !this.exception && !this.waiting && this.step(); i++) {
         }
-        if (i === batchSize) {
+        if (i === maxSteps) {
             this.vpc.sleep(0.001, () => {
                 this.waiting = false;
                 this.unpause();
@@ -638,15 +646,18 @@ export class Execution {
                 for (const arg of args) {
                     const argVal = this.readVal(arg);
                     switch (argVal.type.type) {
-                        case BaseType.kSingle:
-                            this.vpc.print(" " + formatFloatSingle(argVal.val) + " ");
+                        case BaseType.kSingle: {
+                            this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val)));
                             break;
-                        case BaseType.kString:
+                        }
+                        case BaseType.kString: {
                             this.vpc.print("" + argVal.val);
                             break;
-                        default:
-                            this.vpc.print(" " + argVal.val + " ");
+                        }
+                        default: {
+                            this.vpc.print(fixupNumberForPrinting("" + argVal.val));
                             break;
+                        }
                     }
                 }
                 break;

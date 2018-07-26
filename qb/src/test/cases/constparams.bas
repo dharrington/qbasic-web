@@ -1,0 +1,12 @@
+DECLARE SUB MYSUB (Y)
+CONST A = 5
+PRINT A;
+MYSUB A
+PRINT A;
+MYSUB A
+SUB MYSUB (Y)
+    Y = 3
+    PRINT Y;
+END SUB
+REM output
+ 5  3  5  3 
