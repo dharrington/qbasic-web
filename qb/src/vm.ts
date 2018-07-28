@@ -14,7 +14,7 @@
 
 // vm.ts implements the virtual machine that runs programs.
 
-import { BaseType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
+import { BaseType, baseTypeToSigil, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 
 // The virtual computer on which the VM executes.
 export interface IVirtualPC {
@@ -31,6 +31,48 @@ export interface IVirtualPC {
     sleep(delay: number, done);
     inkey(): string;
     cls();
+}
+
+export class NullPC implements IVirtualPC {
+    print(text: string) {
+        throw new Error("not implemented");
+    }
+    input(completed: (text: string) => void) {
+        throw new Error("not implemented");
+    }
+    setForeColor(fc: number) {
+        throw new Error("not implemented");
+    }
+    setBackColor(bc: number) {
+        throw new Error("not implemented");
+    }
+    line(x1: number, y1: number, x2: number, y2: number, color?: number) {
+        throw new Error("not implemented");
+    }
+    pset(x: number, y: number, color?: number) {
+        throw new Error("not implemented");
+    }
+    locate(x?: number, y?: number) {
+        throw new Error("not implemented");
+    }
+    screen(id: number) {
+        throw new Error("not implemented");
+    }
+    resetPalette() {
+        throw new Error("not implemented");
+    }
+    setPaletteAttribute(attr: number, color: number) {
+        throw new Error("not implemented");
+    }
+    sleep(delay: number, done) {
+        throw new Error("not implemented");
+    }
+    inkey(): string {
+        throw new Error("not implemented");
+    }
+    cls() {
+        throw new Error("not implemented");
+    }
 }
 
 export enum InstructionID {
@@ -54,7 +96,7 @@ export enum InstructionID {
     TO_LONG, // S S
     TO_SINGLE, // S S
     TO_DOUBLE, // S S
-    BRANCH_IFNOT, // S PC
+    BRANCH_IFNOT, // PC S
     BRANCH, // PC
     CALL_SUB, // PC string[]
     EXIT_SUB, // <no parameters>
@@ -77,7 +119,7 @@ export enum InstructionID {
     NOT, // S S
     LOGICNOT, // S S
     PRINT, // S ...
-    LOCATE, // S|null [ S|null ]
+    LOCATE, // S|undefined [ S|undefined ]
     ABS, // S S
     MID, // S S S [ S ]
     RIGHT, // S S S
@@ -136,14 +178,14 @@ export class SingleInput {
 export class InputSpec {
     constructor(public keepCursor: boolean, public prompt: string, public inputs: SingleInput[]) { }
 
-    parseInput(text: string): VariableValue[] | null {
+    parseInput(text: string): VariableValue[] | undefined {
         const result: VariableValue[] = [];
         let first = true;
         for (const input of this.inputs) {
             text = text.trim();
             if (!first) {
                 if (text[0] !== ",") {
-                    return null;
+                    return undefined;
                 }
                 text = text.substr(1).trim();
             }
@@ -151,32 +193,32 @@ export class InputSpec {
             switch (input.type) {
                 case BaseType.kString: {
                     const m = /[^,]*/.exec(text);
-                    if (!m) return null;
+                    if (!m) return undefined;
                     result.push(VariableValue.single(kStringType, m[0]));
                     text = text.substr(m[0].length);
                     break;
                 }
                 case BaseType.kInt: {
                     const m = /[+-]?[0-9]*/.exec(text);
-                    if (!m) return null;
+                    if (!m) return undefined;
                     const i = parseInt(m[0], 10);
-                    if (i > kIntMax || i < kIntMin) return null;
+                    if (i > kIntMax || i < kIntMin) return undefined;
                     result.push(VariableValue.newInt(i));
                     text = text.substr(m[0].length);
                     break;
                 }
                 case BaseType.kLongInt: {
                     const m = /[+-]?[0-9]*/.exec(text);
-                    if (!m) return null;
+                    if (!m) return undefined;
                     const i = parseInt(m[0], 10);
-                    if (i > kLongMax || i < kLongMin) return null;
+                    if (i > kLongMax || i < kLongMin) return undefined;
                     result.push(VariableValue.newLong(i));
                     text = text.substr(m[0].length);
                     break;
                 }
                 case BaseType.kSingle: {
                     const m = /^[+-]?([0-9]+([.][0-9]*[EeDd][+-][0-9]+)?)|(\.[0-9]+([EeDd][+-][0-9]+))/.exec(text);
-                    if (!m) return null;
+                    if (!m) return undefined;
                     const i = parseFloat(m[0]);
                     result.push(VariableValue.single(kSingleType, i));
                     text = text.substr(m[0].length);
@@ -184,7 +226,7 @@ export class InputSpec {
                 }
                 case BaseType.kDouble: {
                     const m = /^[+-]?([0-9]+([.][0-9]*[EeDd][+-][0-9]+)?)|(\.[0-9]+([EeDd][+-][0-9]+))/.exec(text);
-                    if (!m) return null;
+                    if (!m) return undefined;
                     const i = parseFloat(m[0]);
                     result.push(VariableValue.single(kDoubleType, i));
                     text = text.substr(m[0].length);
@@ -193,7 +235,7 @@ export class InputSpec {
             }
         }
         if (text.trim() !== "") {
-            return null;
+            return undefined;
         }
         return result;
     }
@@ -245,6 +287,18 @@ export class VariableValue {
     toString(): string {
         const dimStr = this.dims ? "(" + this.dims.map((x) => "" + x).join(", ") + ")" : "";
         return `'${this.val}' ${this.type} ${dimStr}`;
+    }
+    toShortString(): string {
+        const dimStr = this.dims ? "(" + this.dims.map((x) => "" + x).join(", ") + ")" : "";
+        let typeStr = "";
+        if (this.type.isNumeric()) {
+            typeStr = baseTypeToSigil(this.type.type);
+        } else if (!this.type.isString()) {
+            typeStr = this.type.toString();
+        } else {
+            return `'${this.val}'${dimStr}`;
+        }
+        return `${this.val}${typeStr}${dimStr}`;
     }
     // Linearize a multidimensional index.
     indexOffset(index: number[]): number | IndexOutOfRange {
@@ -304,8 +358,8 @@ export class Instruction {
         return "" + val;
     }
     constructor(public id: InstructionID, public args: any[]) { }
-    toString(): string {
-        return `${InstructionID[this.id]} ${this.args.map((x) => "" + x).join(", ")}`;
+    toString(prog: Program): string {
+        return `${InstructionID[this.id]} ${this.args.map((x, idx) => prog.instructionArgToString(this.id, x, idx)).join(", ")}`;
     }
 }
 export class Program {
@@ -314,13 +368,30 @@ export class Program {
     // The program's const data.
     public data: VariableValue[] = [];
     toString(): string {
-        return this.inst.map((inst) => inst.toString()).join("\n");
+        return this.inst.map((inst, idx) => `${idx}\t` + inst.toString(this)).join("\n");
+    }
+    instructionArgToString(id: InstructionID, arg: any, argIndex: number): string {
+        if (typeof (arg) === "number") {
+            if ((id === InstructionID.BRANCH || id === InstructionID.BRANCH_IFNOT) && argIndex === 0) {
+                return "" + arg; // PC;
+            }
+            if (id === InstructionID.ASSIGN_ARG && argIndex === 0) {
+                return "" + arg;
+            }
+            if (arg < 0 && -arg < this.data.length) {
+                return this.data[-arg].toShortString().replace(/\n/, "\\n");
+            }
+        }
+        if (typeof (arg) === "string") {
+            return arg;
+        }
+        return "" + arg;
     }
 }
 
 // A stack frame.
 class Frame {
-    public parent: Frame | null = null;
+    public parent: Frame | undefined;
     public pc: number = 0;
     public stackOffset: number = 0;
     public vars: Map<string, VariableValue> = new Map<string, VariableValue>();
@@ -381,7 +452,7 @@ export class Execution {
     public stack: any[] = [];
     public exception: any = null;
     public waiting: boolean = false;
-    public onEnd: () => void = null;
+    public onEnd: () => void | undefined;
     public done: boolean = false;
 
     private frame: Frame = new Frame();
@@ -470,7 +541,7 @@ export class Execution {
                 const idx = args[0];
                 const varName = args[1];
                 const posStackIndices = args[2] as number[];
-                let index: number[] = null;
+                let index: number[] | undefined;
                 if (posStackIndices) {
                     index = posStackIndices.map((i) => this.readVal(i).val);
                 }
@@ -487,12 +558,16 @@ export class Execution {
                 const idx = args[0];
                 const varName = this.frame.foreignArgNames[args[1]];
                 const posStackIndices = args[2] as number[];
-                let index: number[] = null;
+                let index: number[] | undefined;
                 if (posStackIndices) {
                     index = posStackIndices.map((i) => this.readVal(i).getNumber());
                 }
-
-                const value = this.frame.parent.readVar(varName, index);
+                const stackParent = this.frame.parent;
+                if (!stackParent) {
+                    this.raise("LOAD_ARGVAL in module level");
+                    break;
+                }
+                const value = stackParent.readVar(varName, index);
                 if (value instanceof IndexOutOfRange) {
                     this.frame.pc--;
                     this.raise("index out of range");
@@ -506,6 +581,10 @@ export class Execution {
                 break;
             case InstructionID.ASSIGN_VAR: {
                 const v = this.frame.vars.get(args[0] as string);
+                if (!v) {
+                    this.raise("ASSIGN_VAR does not exist");
+                    break;
+                }
                 const val = this.readVal(args[1]);
                 const index = args.length > 2 ? args[2] as number[] : null;
                 if (!index) v.setVal(val.val);
@@ -516,7 +595,15 @@ export class Execution {
             }
             case InstructionID.ASSIGN_ARG: {
                 const varName = this.frame.foreignArgNames[args[0] as number];
+                if (!this.frame.parent) {
+                    this.raise("ASSIGN_ARG at module level");
+                    break;
+                }
                 const v = this.frame.parent.vars.get(varName);
+                if (!v) {
+                    this.raise("no variable");
+                    break;
+                }
                 const val = this.readVal(args[1]);
                 const index = args.length > 2 ? args[2] as number[] : null;
                 if (!index) v.setVal(val.val);
@@ -676,6 +763,7 @@ export class Execution {
                     if (!result) {
                         this.vpc.print("Redo from start\n");
                         this.vpc.input(inputReady);
+                        return;
                     }
                     this.waiting = false;
                     this.vpc.print("\n");
@@ -688,9 +776,9 @@ export class Execution {
                 break;
             }
             case InstructionID.BRANCH_IFNOT: {
-                const val = this.readVal(args[0]);
+                const val = this.readVal(args[1]);
                 if (val.isZero()) {
-                    this.frame.pc = args[1];
+                    this.frame.pc = args[0];
                 }
                 break;
             }
@@ -706,7 +794,7 @@ export class Execution {
                 break;
             }
             case InstructionID.EXIT_SUB: {
-                this.frame = this.frame.parent;
+                this.frame = this.frame.parent as Frame;
                 break;
             }
             case InstructionID.ABS: {
@@ -793,11 +881,12 @@ export class Execution {
                 const y1 = this.readVal(args[1]).val;
                 const x2 = this.readVal(args[2]).val;
                 const y2 = this.readVal(args[3]).val;
-                let color = null;
+                let color: number | undefined;
                 if (args[4] !== null) {
                     color = this.readVal(args[4]).val;
+                    color = Math.trunc(color as number);
                 }
-                this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), Math.trunc(color));
+                this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), color);
                 this.lastPointX = Math.trunc(x2);
                 this.lastPointY = Math.trunc(y2);
                 break;
@@ -805,11 +894,12 @@ export class Execution {
             case InstructionID.PSET: {
                 const x = this.readVal(args[0]).val;
                 const y = this.readVal(args[1]).val;
-                let color = null;
+                let color: number | undefined;
                 if (args[2] !== null) {
                     color = this.readVal(args[2]).val;
+                    color = Math.trunc(color as number);
                 }
-                this.vpc.pset(Math.trunc(x), Math.trunc(y), Math.trunc(color));
+                this.vpc.pset(Math.trunc(x), Math.trunc(y), color);
                 this.lastPointX = Math.trunc(x);
                 this.lastPointY = Math.trunc(y);
                 break;

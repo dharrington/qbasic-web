@@ -120,8 +120,17 @@ export class Val {
     isConst(): boolean { return this.kind === ValKind.kConst; }
     isLiteral(): boolean { return this.kind === ValKind.kLiteral; }
     isStackValue(): boolean { return this.kind === ValKind.kStackValue; }
-    loc(): Location {
-        return null; // TODO: might be useful to encode location into some values.
+    constNumberValue(): number | undefined {
+        if (this.isConst() || this.isLiteral()) {
+            if (this.type.isNumeric()) return this.numberValue;
+        }
+        return undefined;
+    }
+    loc(): Location | undefined {
+        return undefined; // TODO: might be useful to encode location into some values.
+    }
+    baseType(): BaseType {
+        return this.type ? this.type.type : BaseType.kNone;
     }
 }
 
@@ -138,15 +147,15 @@ export interface ICtx {
     finalize();
     error(message: string, loc: Location);
     defineType(id: Token, t: Type);
-    typename(tok: Token): Type;
+    typename(tok: Token): Type | undefined;
     label(tok: Token);
     lineNumber(num: number, tok: Token);
     newline(lineNumber: number);
     data(dataArray: Val[]);
-    variable(varName: Token, baseType?: BaseType): Val;
+    variable(varName: Token, baseType?: BaseType): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
     index(v: Val, idx: Val[]): Val;
-    dim(name: Token, size: number[], ty?: Type);
+    dim(name: Token, size?: number[], ty?: Type);
     op(name: string, operands: Val[]): Val;
     sub(id: Token, args: Val[]): ICtx;
     declArg(id: Token, isArray: boolean, ty: Type | null): Val;
@@ -170,10 +179,10 @@ export interface ICtx {
     wend();
     gotoLine(no: number, numberToken: Token);
     gotoLabel(lbl: Token);
-    color(fore: Val, back: Val);
-    line(a: Coord, b: Coord, color: Val, option: string, style?: Val);
-    pset(a: Coord, color: Val);
-    locate(x: Val, y: Val); // TODO: more parameters
+    color(fore?: Val, back?: Val);
+    line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val);
+    pset(a: Coord, color: Val | undefined);
+    locate(x?: Val, y?: Val); // TODO: more parameters
     screen(id: Val);
     palette(attr?: Val, col?: Val);
     sleep(delay?: Val);
@@ -199,7 +208,7 @@ export class NullCtx implements ICtx {
         if (!t) return;
         this.types.set(id.text, t);
     }
-    typename(tok: Token): Type {
+    typename(tok: Token): Type | undefined {
         if (tok.text === "INTEGER") { return kIntType; }
         if (tok.text === "STRING") { return kStringType; }
         if (tok.text === "DOUBLE") { return kDoubleType; }
@@ -211,20 +220,20 @@ export class NullCtx implements ICtx {
     lineNumber(num: number, tok: Token) { }
     newline(num: number) { }
     data(dataArray: Val[]) { }
-    variable(varName: Token, baseType?: BaseType): Val {
+    variable(varName: Token, baseType?: BaseType): Val | undefined {
         const dimVar = this.dimVars.get(varName.text);
         if (dimVar) {
             if (baseType === BaseType.kNone || dimVar.type.type === baseType) {
                 return dimVar;
             } else {
                 this.error("duplicate definition", varName.loc);
-                return null;
+                return undefined;
             }
         }
         const key = varName.text + baseTypeToSigil(baseType);
         const autoVar = this.autoVars.get(key);
         if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, basicType(baseType));
+        const v = Val.newVar(varName.text, basicType(baseType) || kIntType);
         this.autoVars.set(key, v);
         return v;
     }
@@ -232,7 +241,7 @@ export class NullCtx implements ICtx {
     index(v: Val, idx: Val[]): Val {
         return v;
     }
-    dim(name: Token, size: number[], ty?: Type) {
+    dim(name: Token, size?: number[], ty?: Type) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -286,8 +295,8 @@ export class NullCtx implements ICtx {
     gotoLabel(lbl: Token) { }
     color(fore: Val, back: Val) { }
     line(a: Coord, b: Coord, color: Val, option: string, style?: Val) { }
-    pset(a: Coord, color: Val) { }
-    locate(x: Val, y: Val) { }
+    pset(a: Coord, color: Val | undefined) { }
+    locate(x?: Val, y?: Val) { }
     screen(id: Val) { }
     palette(attr: Val, col: Val) { }
     sleep(delay?: Val) { }
@@ -305,6 +314,9 @@ class Block {
     constructor(public beginToken: Token, public kind: string) { }
 }
 
+export const kValTrue = Val.newNumberLiteral(-1, kIntType);
+export const kValZero = Val.newNumberLiteral(0, kIntType);
+
 // Parses QBasic code, relays information to ctx.
 class Parser {
     private tokenIndex = 0;
@@ -313,8 +325,8 @@ class Parser {
     private openBlocks: Block[] = [];
     constructor(private ctx: ICtx, private tokens: Token[]) {
     }
-    currentBlock(): Block | null {
-        return this.openBlocks.length ? this.openBlocks[this.openBlocks.length - 1] : null;
+    currentBlock(): Block | undefined {
+        return this.openBlocks.length ? this.openBlocks[this.openBlocks.length - 1] : undefined;
     }
     tok(offset: number = 0): Token {
         if (offset + this.tokenIndex >= this.tokens.length) {
@@ -329,13 +341,13 @@ class Parser {
         }
         this.ctx.error(msg, loc);
     }
-    nextIf(val: string): Token {
+    nextIf(val: string): Token | undefined {
         const t = this.tok();
         if (t.text === val) {
             this.next();
             return t;
         }
-        return null;
+        return undefined;
     }
 
     expectNewline(allowHardNewline: boolean = true): boolean {
@@ -367,7 +379,7 @@ class Parser {
         }
     }
 
-    expectIdent(val?: string): Token {
+    expectIdent(val?: string): Token | undefined {
         const t = this.tok();
         if (t.id === TokenType.kIdent) {
             if (!val || t.text === val) {
@@ -376,17 +388,17 @@ class Parser {
             }
         }
         this.error("expected " + (val ? val : "ident"));
-        return null;
+        return undefined;
     }
-    nextIdent(): Token {
+    nextIdent(): Token | undefined {
         const t = this.tok();
         if (t.id === TokenType.kIdent) {
             this.next();
             return t;
         }
-        return null;
+        return undefined;
     }
-    expectOp(text: string): Token {
+    expectOp(text: string): Token | undefined {
         const t = this.tok();
         if (t.id === TokenType.kOp && t.text === text) {
             this.next();
@@ -401,9 +413,9 @@ class Parser {
         return this.tok().id === TokenType.kNewline || this.tok().isOp(":") || this.isEof();
     }
 
-    typename(): Type {
+    typename(): Type | undefined {
         const id = this.expectIdent();
-        if (!id) return null;
+        if (!id) return undefined;
         return this.ctx.typename(id);
     }
 
@@ -411,6 +423,7 @@ class Parser {
         if (!this.nextIf("TYPE")) return false;
         const r = new Val();
         const typeId = this.expectIdent();
+        if (!typeId) return false;
         const userType = new Type();
         userType.type = BaseType.kUserType;
         while (!this.isEof()) {
@@ -438,18 +451,20 @@ class Parser {
     label(): boolean { // LabelName:
         if (!this.tok(1).isOp(":")) return false;
         if (this.tok(0).id !== TokenType.kIdent) return false;
-        this.ctx.label(this.expectIdent());
+        const id = this.expectIdent();
+        if (!id) return false;
+        this.ctx.label(id);
         this.next();
         return true;
     }
 
-    stringLiteral(): Val {
+    maybeStringLiteral(): Val | undefined {
         const tok = this.tok();
         if (tok.id === TokenType.kString) {
             this.next();
             return Val.newStringLiteral(tok.text.substr(1, tok.text.length - 2));
         }
-        return null;
+        return undefined;
     }
 
     abs(): Val {
@@ -458,7 +473,7 @@ class Parser {
         if (!args) return kNullVal;
         return this.ctx.op("ABS", args);
     }
-    maybeFunctionCall(): Val {
+    maybeFunctionCall(): Val | undefined {
         let id: string;
         let tokenCount: number;
         if (this.tok(0).isIdent() && this.tok(1).isSigil()) {
@@ -467,10 +482,11 @@ class Parser {
         } else if (this.tok(0).isIdent()) {
             id = this.tok(0).text;
             tokenCount = 1;
+        } else {
+            return undefined;
         }
-        if (!id) return null;
         const func = this.ctx.lookupFunction(id);
-        if (!func) return null;
+        if (!func) return undefined;
         this.next(tokenCount);
         const args = this.callArgsWithTypes(func.argTypes, func.argTypes.length - func.optionalParameters);
         if (!args) {
@@ -479,13 +495,13 @@ class Parser {
         return this.ctx.callFunction(id, args);
     }
 
-    numberLiteral(): Val {
+    maybeNumberLiteral(): Val | undefined {
         let idx = 0;
         if (this.tok().isOp("-")) {
             idx = 1;
         }
         const numTok = this.tok(idx);
-        if (numTok.id !== TokenType.kNumber) return null;
+        if (numTok.id !== TokenType.kNumber) return undefined;
         this.tokenIndex += idx + 1;
         const v = new Val();
         v.kind = ValKind.kLiteral;
@@ -532,12 +548,12 @@ class Parser {
         return v;
     }
 
-    data(): boolean { // DATA [value, ...]
+    data() { // DATA [value, ...]
         if (!this.tok().isIdent("DATA")) return;
         this.next();
-        const datas = [];
+        const datas: Val[] = [];
         while (this.tok().id !== TokenType.kNewline) {
-            let v = this.stringLiteral() || this.numberLiteral();
+            let v = this.maybeStringLiteral() || this.maybeNumberLiteral();
             if (!v) {
                 if (this.tok().id === TokenType.kIdent) { // unquoted string
                     v = new Val();
@@ -565,9 +581,20 @@ class Parser {
         return BaseType.kNone;
     }
 
-    varname(allowIndex?: boolean): Val { // <ident>[type-sigil]
-        if (this.tok().id !== TokenType.kIdent) return null;
+    maybeVarname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
+        if (this.tok().id !== TokenType.kIdent) return undefined;
         const id = this.expectIdent();
+        if (!id) return undefined;
+        let v = this.ctx.variable(id, this.maybeSigil());
+        if (v && allowIndex && this.tok().isOp("(")) {
+            v = this.ctx.index(v, this.arrayIndex());
+        }
+        return v;
+    }
+
+    varname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
+        const id = this.expectIdent();
+        if (!id) return undefined;
         let v = this.ctx.variable(id, this.maybeSigil());
         if (v && allowIndex && this.tok().isOp("(")) {
             v = this.ctx.index(v, this.arrayIndex());
@@ -576,7 +603,7 @@ class Parser {
     }
 
     arrayIndex(): Val[] {
-        if (!this.expectOp("(")) return null;
+        this.expectOp("(");
         const idx: Val[] = [];
         while (!this.isEol()) {
             if (this.nextIf(")")) {
@@ -587,20 +614,21 @@ class Parser {
             idx.push(v);
         }
         this.expectOp(")");
+        return [];
     }
 
-    arraySize(): number[] {
-        if (!this.nextIf("(")) return null;
-        const i = this.numberLiteral();
+    maybeArraySize(): number[] | undefined {
+        if (!this.nextIf("(")) return undefined;
+        const i = this.maybeNumberLiteral();
         if (!i) { // TODO: CONST
             this.error("expected number");
-            return null;
+            return undefined;
         }
         if (this.nextIf("TO")) {
-            const to = this.numberLiteral();
+            const to = this.maybeNumberLiteral();
             if (!to) {
                 this.error("expected number");
-                return null;
+                return undefined;
             }
             this.expectOp(")");
             return [i.numberValue, to.numberValue];
@@ -612,7 +640,8 @@ class Parser {
     dim() { // DIM <ident> [AS <type>]
         this.expectIdent("DIM");
         let id = this.expectIdent();
-        let size = this.arraySize();
+        if (!id) return;
+        let size = this.maybeArraySize();
         while (true) {
             if (this.nextIf("AS")) {
                 this.ctx.dim(id, size, this.typename());
@@ -622,7 +651,7 @@ class Parser {
             if (this.tok().isOp(",")) {
                 ++this.tokenIndex;
                 id = this.expectIdent();
-                size = this.arraySize();
+                size = this.maybeArraySize();
                 if (!id) {
                     this.eatUntilNewline();
                     break;
@@ -633,15 +662,15 @@ class Parser {
         }
         return true;
     }
-    expr6(): Val {
+    expr6(): Val | undefined {
         if (this.nextIf("(")) {
             const expr = this.expr();
             if (this.expectOp(")")) return expr;
-            return null;
+            return undefined;
         }
         if (this.tok().isIdent("ABS")) return this.abs();
         const unaryNeg = this.nextIf("-");
-        const r = this.maybeFunctionCall() || this.varname(true) || this.numberLiteral() || this.stringLiteral();
+        const r = this.maybeFunctionCall() || this.maybeVarname(true) || this.maybeNumberLiteral() || this.maybeStringLiteral();
         if (r) {
             if (unaryNeg) {
                 if (r.isLiteral() && r.type.isNumeric()) {
@@ -654,11 +683,11 @@ class Parser {
         }
         this.error("expected value");
         this.eatUntilNewline();
-        return kNullVal;
+        return undefined;
     }
     // There are many layers to QBasic's operator precedence, which implies many functions for a recursive descent
     // parser. This template is used to create methods for most operators.
-    binaryExprTemplate(ops: string[], nextFunc: () => Val): Val {
+    binaryExprTemplate(ops: string[], nextFunc: () => Val): Val | undefined {
         let lhs = nextFunc();
         while (lhs) {
             const op = this.tok();
@@ -680,10 +709,12 @@ class Parser {
     expr3 = () => this.binaryExprTemplate(["MOD", "\\"], this.expr4.bind(this));
     expr2 = () => this.binaryExprTemplate(["+", "-"], this.expr3.bind(this));
     expr1 = () => this.binaryExprTemplate([">", "<", ">=", "<=", "=", "<>"], this.expr2.bind(this));
-    exprL6(): Val {
+    exprL6(): Val | undefined {
         while (!this.isEol()) {
             if (this.nextIf("NOT")) {
-                return this.ctx.op("NOT", [this.exprL6()]);
+                const rhs = this.exprL6();
+                if (!rhs) return undefined;
+                return this.ctx.op("NOT", [rhs]);
             }
             return this.expr1();
         }
@@ -694,20 +725,20 @@ class Parser {
     exprL2 = () => this.binaryExprTemplate(["EQV"], this.exprL3.bind(this));
     exprL1 = () => this.binaryExprTemplate(["IMP"], this.exprL2.bind(this));
 
-    expr(): Val {
+    expr(): Val | undefined {
         return this.exprL1();
     }
-    numericExpr(): Val {
+    numericExpr(): Val | undefined {
         const v = this.expr();
         if (v && v.type && !v.type.isNumeric()) {
             this.error("expected numeric");
-            return kNullVal;
+            return undefined;
         }
         return v;
     }
     print() {
         if (this.nextIf("PRINT")) { } else this.expectOp("?");
-        const vals = [];
+        const vals: Val[] = [];
         while (!this.isEol()) {
             const v = this.expr();
             if (!v) {
@@ -732,8 +763,8 @@ class Parser {
 
     locate() {
         this.expectIdent("LOCATE");
-        let x: Val;
-        let y: Val;
+        let x: Val | undefined;
+        let y: Val | undefined;
         if (this.tok().isOp(",")) {
             this.next();
             y = this.numericExpr();
@@ -749,10 +780,12 @@ class Parser {
 
     let(): boolean {
         this.nextIf("LET");
-        const v = this.varname(true);
+        const v = this.maybeVarname(true);
         if (!v) return false;
         if (this.expectOp("=")) {
-            this.ctx.op("assign", [v, this.expr()]);
+            const rhs = this.expr();
+            if (!rhs) return true;
+            this.ctx.op("assign", [v, rhs]);
         }
         return true;
     }
@@ -765,7 +798,7 @@ class Parser {
     declArgs(): Val[] {
         if (!this.tok().isOp("(")) { return []; }
         this.next();
-        const args = [];
+        const args: Val[] = [];
         while (!this.isEol() && !this.tok().isOp(")")) {
             if (args.length) {
                 this.expectOp(",");
@@ -779,9 +812,11 @@ class Parser {
             }
             let ty = Type.basic(sig);
             if (this.nextIf("AS")) {
-                ty = this.typename();
-                if (sig !== BaseType.kNone && ty.type !== sig) {
+                const declType = this.typename();
+                if (declType && sig !== BaseType.kNone && declType.type !== sig) {
                     this.error("mismatched type");
+                } else if (declType) {
+                    ty = declType;
                 }
             }
             if (!ty) {
@@ -800,6 +835,7 @@ class Parser {
         this.expectIdent("IF");
         const nesting = ++this.controlNesting; // TODO: probably not necessary
         const cond = this.expr();
+        if (!cond) return;
         let hitElse = false;
         let singleLine = false;
         if (this.nextIf("THEN")) {
@@ -881,12 +917,12 @@ class Parser {
     screenstmt() {
         this.expectIdent("SCREEN");
         const id = this.numericExpr();
-        this.ctx.screen(id);
+        if (id) this.ctx.screen(id);
     }
     color() { // COLOR [<fore>][, <back>]
         this.expectIdent("COLOR");
-        let fore: Val;
-        let back: Val;
+        let fore: Val | undefined;
+        let back: Val | undefined;
         if (this.tok().isOp(",")) {
             this.next();
             back = this.expr();
@@ -941,31 +977,31 @@ class Parser {
         this.ctx.declSub(id, this.declArgs());
         return true;
     }
-    callArgsWithTypes(types: Type[], requiredArgsCount: number = -1): Val[] {
+    callArgsWithTypes(types: Type[], requiredArgsCount: number = -1): Val[] | undefined {
         if (requiredArgsCount === -1) { requiredArgsCount = types.length; }
         const args = this.callArgs(true, requiredArgsCount);
-        if (!args || args.length > types.length) { return null; }
+        if (!args || args.length > types.length) { return undefined; }
         if (args.length < requiredArgsCount) {
             this.error(`expected ${requiredArgsCount} arguments`);
-            return null;
+            return undefined;
         }
         for (let i = 0; i < args.length; i++) {
             if (types[i].isNumeric()) {
                 if (!args[i].type || !args[i].type.isNumeric()) {
                     this.error(`expected numeric for argument ${i + 1}`);
-                    return null;
+                    return undefined;
                 }
             }
             if (types[i].isString()) {
                 if (!args[i].type || !args[i].type.isString()) {
                     this.error(`expected string for argument ${i + 1}`);
-                    return null;
+                    return undefined;
                 }
             }
         }
         return args;
     }
-    callArgs(wantParen: boolean, expectedCount = -1): Val[] {
+    callArgs(wantParen: boolean, expectedCount = -1): Val[] | undefined {
         if (wantParen && !this.tok().isOp("(")) {
             if (expectedCount >= 1) {
                 this.error(`expected ${expectedCount} arguments`);
@@ -973,7 +1009,7 @@ class Parser {
             return [];
         }
         if (wantParen) { this.expectOp("("); }
-        const args = [];
+        const args: Val[] = [];
         while (true) {
             if (wantParen ? this.tok().isOp(")") : this.isEol()) {
                 if (expectedCount >= 0 && args.length < expectedCount) {
@@ -984,7 +1020,9 @@ class Parser {
                 return args;
             }
             if (this.isEol()) { break; }
-            args.push(this.expr());
+            const e = this.expr();
+            if (!e) return undefined;
+            args.push(e);
             if (wantParen ? this.tok().isOp(")") : this.isEol()) { continue; }
             if (!this.tok().isOp(",")) {
                 this.error("expected ',' or )");
@@ -996,10 +1034,12 @@ class Parser {
         return args;
     }
 
-    argsUntilNewline(): Val[] {
+    argsUntilNewline(): Val[] | undefined {
         const args = [];
         while (!this.isEol()) {
-            args.push(this.expr());
+            const e = this.expr();
+            if (!e) return undefined;
+            args.push();
             if (this.isEol()) {
                 this.expectNewline();
                 return args;
@@ -1013,14 +1053,16 @@ class Parser {
         return args;
     }
 
-    varRefsUntilNewline(): Val[] {
+    varRefsUntilNewline(): Val[] | undefined {
         const args = [];
         while (!this.isEol()) {
             // TODO: This is pretty ugly. Single-line IF statements force checking additional terminals...
             if (this.tok().text === "END" || this.tok().text === "ELSE" || this.tok().text === "ELSEIF") {
                 break;
             }
-            args.push(this.varname(true));
+            const v = this.maybeVarname(true);
+            if (!v) { this.expectIdent(); return undefined; }
+            args.push();
             if (this.isEol()) {
                 return args;
             }
@@ -1032,7 +1074,7 @@ class Parser {
         return args;
     }
 
-    callsub(): boolean { // <name> [(<args>)]
+    maybeCallSubStmt(): boolean { // <name> [(<args>)]
         const call = this.nextIf("CALL");
         if (!this.tok().isIdent()) {
             if (call) {
@@ -1043,9 +1085,10 @@ class Parser {
         }
         const subNameTok = this.tok();
         const subName = subNameTok.text;
-        if (!this.ctx.isSub(subName)) { return; }
+        if (!this.ctx.isSub(subName)) { return false; }
         this.next();
-        this.ctx.callSub(subNameTok, this.callArgs(!!call));
+        const args = this.callArgs(!!call);
+        if (args) this.ctx.callSub(subNameTok, args);
         return true;
     }
 
@@ -1074,7 +1117,7 @@ class Parser {
             prompt = "? ";
         }
         const args = this.varRefsUntilNewline();
-        this.ctx.input(keepCursor, prompt, args);
+        if (args) this.ctx.input(keepCursor, prompt, args);
         return true;
     }
 
@@ -1102,17 +1145,19 @@ class Parser {
     }
     nextStmt() {
         this.expectIdent("NEXT");
-        if (!this.currentBlock() || this.currentBlock().kind !== "FOR") {
+        const block = this.currentBlock();
+        if (!block || block.kind !== "FOR") {
             this.error("next without for");
             return;
         }
-        const forLabel = this.currentBlock().forLabel;
+        const forLabel = block.forLabel;
         if (this.tok().isNewlineOrColon()) {
             this.ctx.forEnd();
             this.openBlocks.pop();
             return;
         }
-        const nextVar = this.varname();
+        const nextVar = this.maybeVarname();
+        if (!nextVar) return;
         if (nextVar.varName !== forLabel) {
             this.error("NEXT variable does not match FOR");
         } else {
@@ -1123,11 +1168,15 @@ class Parser {
     forStmt() {
         // FOR i = 100 TO 500 STEP 50
         const forTok = this.expectIdent("FOR");
+        if (!forTok) return;
         const idx = this.varname();
+        if (!idx) return;
         this.expectOp("=");
         const f = this.numericExpr();
-        this.expectIdent("TO");
+        if (!f) return;
+        if (!this.expectIdent("TO")) return;
         const t = this.numericExpr();
+        if (!t) return;
         let st;
         if (this.nextIf("STEP")) {
             st = this.numericExpr();
@@ -1141,40 +1190,52 @@ class Parser {
     }
     doloop() {
         const doTok = this.expectIdent("DO");
-        let whileCond: Val;
+        if (!doTok) return;
+        let whileCond: Val = kValTrue;
         if (this.nextIf("UNTIL")) {
             const until = this.expr();
+            if (!until) return;
             whileCond = this.ctx.op("LNOT", [until]);
         } else if (this.nextIf("WHILE")) {
-            whileCond = this.expr();
+            const cond = this.expr();
+            if (!cond) return;
+            whileCond = cond;
         }
         this.openBlocks.push(new Block(doTok, "DO"));
         this.ctx.doBegin(whileCond);
     }
     loop() {
         this.expectIdent("LOOP");
-        if (this.currentBlock().kind !== "DO") {
+        const block = this.currentBlock();
+        if (!block || block.kind !== "DO") {
             this.error("LOOP without DO");
             return;
         }
         this.openBlocks.pop();
-        let untilCond: Val;
+        let untilCond = kValZero;
         if (this.nextIf("UNTIL")) {
-            untilCond = this.expr();
-
+            const cond = this.expr();
+            if (!cond) return;
+            untilCond = cond;
         } else if (this.nextIf("WHILE")) {
-            untilCond = this.ctx.op("LNOT", [this.expr()]);
+            const cond = this.expr();
+            if (!cond) return;
+            untilCond = this.ctx.op("LNOT", [cond]);
         }
         this.ctx.doEnd(untilCond);
     }
     whileStmt() {
         const whileTok = this.expectIdent("WHILE");
+        if (!whileTok) return;
         this.openBlocks.push(new Block(whileTok, "WHILE"));
-        this.ctx.whileBegin(this.expr());
+        const e = this.expr();
+        if (!e) return;
+        this.ctx.whileBegin(e);
     }
     wendStmt() {
         this.expectIdent("WEND");
-        if (!this.currentBlock() || this.currentBlock().kind !== "WHILE") {
+        const block = this.currentBlock();
+        if (!block || block.kind !== "WHILE") {
             this.error("WEND without WHILE");
             return;
         }
@@ -1183,11 +1244,12 @@ class Parser {
     }
     exit() {
         this.expectIdent("EXIT");
-        if (!this.currentBlock()) {
+        const block = this.currentBlock();
+        if (!block) {
             this.error("EXIT without FOR, DO, or SUB");
             return;
         }
-        switch (this.currentBlock().kind) {
+        switch (block.kind) {
             case "FOR": this.expectIdent("FOR"); this.ctx.forExit(); break;
             case "DO": this.expectIdent("DO"); this.ctx.doExit(); break;
             default:
@@ -1195,7 +1257,7 @@ class Parser {
                 break;
         }
     }
-    coord(): Coord {
+    coord(): Coord | undefined {
         let step = false;
         if (this.nextIf("STEP")) {
             step = true;
@@ -1204,19 +1266,20 @@ class Parser {
             if (step) {
                 this.error("expected (coordinate)");
             }
-            return null;
+            return undefined;
         }
         this.next();
         const x = this.numericExpr();
         this.expectOp(",");
         const y = this.numericExpr();
         this.expectOp(")");
-        return new Coord(step, x, y);
+        if (x && y) return new Coord(step, x, y);
     }
     pset() {
         this.expectIdent("PSET");
         const a = this.coord();
-        let color: Val | null;
+        if (!a) return;
+        let color: Val | undefined;
         if (this.tok().isOp(",")) {
             this.next();
             if (!this.tok().isOp(",")) {
@@ -1230,13 +1293,15 @@ class Parser {
         const a = this.coord();
         this.expectOp("-");
         const b = this.coord();
-        let color: Val;
+        if (!a || !b) return;
+        let color: Val | undefined;
         let option = "";
-        let style: Val = null;
+        let style: Val | undefined;
         if (this.tok().isOp(",")) {
             this.next();
             if (!this.tok().isOp(",")) {
                 color = this.numericExpr();
+                if (!color) return;
             }
             if (this.tok().isOp(",")) {
                 this.next();
@@ -1250,6 +1315,7 @@ class Parser {
                 if (this.tok().isOp(",")) {
                     this.next();
                     style = this.numericExpr();
+                    if (!style) return;
                 }
             }
         }
@@ -1268,16 +1334,19 @@ class Parser {
         if (!this.isEol()) {
             this.ctx.sleep(this.numericExpr());
         } else {
-            this.ctx.sleep(null);
+            this.ctx.sleep(undefined);
         }
     }
     constStmt() {
         this.expectIdent("CONST");
         do {
             const id = this.expectIdent();
+            if (!id) return;
             const sig = this.maybeSigil();
             this.expectOp("=");
-            this.ctx.declConst(id, sig, this.expr());
+            const rhs = this.expr();
+            if (!rhs) return;
+            this.ctx.declConst(id, sig, rhs);
         } while (this.nextIf(","));
     }
     statement(moduleLevel: boolean, allowHardNewline: boolean = true): boolean {
@@ -1320,7 +1389,7 @@ class Parser {
                 return true;
             })();
             if (handled) { break; }
-            if (this.callsub()) { break; }
+            if (this.maybeCallSubStmt()) { break; }
             if (this.let()) { break; }
             // Should only have empty statement when labels are used (since newlines are eaten).
             if (hasLabels) { break; }

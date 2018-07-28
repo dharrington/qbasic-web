@@ -15,7 +15,7 @@
 // codegen.ts - Generates code for QBasic programs.
 
 import {
-    basicType, Coord, ICtx, kNullVal, Location, Token, Val, ValKind,
+    basicType, Coord, ICtx, kNullVal, kValTrue, Location, Token, Val, ValKind,
 } from "./parse";
 import {
     BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType,
@@ -30,16 +30,16 @@ enum CtrlFlowType {
     kWHILE,
 }
 class CtrlFlow {
-    public branchInst: vm.Instruction = null;
+    public branchInst?: vm.Instruction;
     public endInstructions: vm.Instruction[] = [];
     public loopStart: number;
     constructor(public type: CtrlFlowType) { }
 }
 class GotoInfo {
-    public inst: vm.Instruction = null;
     public lineNumber: number;
     public label: string;
     public token: Token;
+    constructor(public inst: vm.Instruction) { }
 }
 
 class SubroutineInfo {
@@ -77,7 +77,7 @@ class GlobalCtx {
     // Has the END instruction been written?
     public isEnd = false;
     constructor() {
-        this.program.data.push(null); // this slot isn't used, so addr=-1 addresses data[1].
+        this.program.data.push(vm.VariableValue.single(kIntType, 0)); // this slot isn't used, so addr=-1 addresses data[1].
         this.functions.set("MID$",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType, kLongType], 1), vm.InstructionID.MID));
         this.functions.set("RIGHT$",
@@ -127,13 +127,13 @@ class GlobalCtx {
 // and again for each subroutine.
 export class CodegenCtx implements ICtx {
     static valConstKey(v: Val): string {
-        if (!v.isLiteral() && !v.isConst()) return null;
+        if (!v.isLiteral() && !v.isConst()) return "";
         return `${v.type}${v.type.isString() ? v.stringValue : v.numberValue}`;
     }
 
     private static literalVarVal(lit: Val): vm.VariableValue {
         const vv = new vm.VariableValue(lit.type);
-        switch (lit.type.type) {
+        switch (lit.baseType()) {
             case BaseType.kString:
                 vv.val = lit.stringValue;
                 break;
@@ -151,8 +151,8 @@ export class CodegenCtx implements ICtx {
     private dimVars: Map<string, Val> = new Map<string, Val>();
     private autoVars: Map<string, Val> = new Map<string, Val>();
     private constVars: Map<string, Val> = new Map<string, Val>();
-    private parent: CodegenCtx = null;
-    private subInfo: SubroutineInfo = null;
+    private parent?: CodegenCtx;
+    private subInfo?: SubroutineInfo;
     private stackOffset: number = 0;
     private ctrlFlowStack: CtrlFlow[] = [];
     private tempVarCount = 0;
@@ -178,7 +178,7 @@ export class CodegenCtx implements ICtx {
         if (!t) return;
         this.g.types.set(id.text, t);
     }
-    typename(tok: Token): Type {
+    typename(tok: Token): Type | undefined {
         if (tok.text === "INTEGER") { return kIntType; }
         if (tok.text === "STRING") { return kStringType; }
         if (tok.text === "DOUBLE") { return kDoubleType; }
@@ -212,29 +212,29 @@ export class CodegenCtx implements ICtx {
         {
             const dimVar = this.dimVars.get(varName.text);
             if (dimVar) {
-                if (baseType === BaseType.kNone || dimVar.type.type === baseType) {
+                if (baseType === BaseType.kNone || dimVar.baseType() === baseType) {
                     return dimVar;
                 } else {
                     this.error("duplicate definition", varName.loc);
-                    return null;
+                    return kNullVal;
                 }
             }
         }
         {
             const constVar = this.constVars.get(varName.text);
             if (constVar) {
-                if (baseType === BaseType.kNone || constVar.type.type === baseType) {
+                if (baseType === BaseType.kNone || constVar.baseType() === baseType) {
                     return constVar;
                 } else {
                     this.error("duplicate definition", varName.loc);
-                    return null;
+                    return kNullVal;
                 }
             }
         }
         const key = varName.text + baseTypeToSigil(baseType);
         const autoVar = this.autoVars.get(key);
         if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, basicType(baseType));
+        const v = Val.newVar(varName.text, basicType(baseType) || kIntType);
         this.autoVars.set(key, v);
 
         // Write declaration instruction.
@@ -335,6 +335,7 @@ export class CodegenCtx implements ICtx {
                 return kNullVal;
             }
             this.error("cannot convert value");
+            return kNullVal;
         }
     }
     pushCompatibleOperands(a: Val, b: Val): Val[] {
@@ -514,8 +515,11 @@ export class CodegenCtx implements ICtx {
     }
     sub(id: Token, args: Val[]): ICtx {
         this.setEnd();
-        const sub = this.g.subs.get(id.text);
-        if (sub.startPc >= 0) {
+        let sub = this.g.subs.get(id.text);
+        if (!sub) {
+            this.declSub(id, args);
+            sub = this.g.subs.get(id.text) as SubroutineInfo;
+        } else if (sub.startPc >= 0) {
             this.error("duplicate subroutine name", id.loc);
             return this;
         }
@@ -535,7 +539,6 @@ export class CodegenCtx implements ICtx {
             subCtx.autoVars.set(this.autoVarKey(argVal), argVal);
         }
         sub.startPc = this.program().inst.length;
-        this.g.subs.set(id.text, sub);
         subCtx.g = this.g;
         subCtx.parent = this;
         subCtx.subInfo = sub;
@@ -544,7 +547,7 @@ export class CodegenCtx implements ICtx {
 
     declArg(id: Token, isArray: boolean, ty: Type | null): Val {
         const v = new Val();
-        v.type = ty;
+        v.type = ty || kIntType;
         v.kind = ValKind.kArgument;
         v.varName = id.text;
         v.isArrayArg = isArray;
@@ -563,10 +566,10 @@ export class CodegenCtx implements ICtx {
     isSub(id: string): boolean {
         return this.g.subs.has(id);
     }
-    lookupFunction(id: string): FunctionType {
+    lookupFunction(id: string): FunctionType | undefined {
         const f = this.g.functions.get(id);
         if (f) return f.type;
-        return null;
+        return undefined;
     }
     callSub(id: Token, args: Val[]) {
         const sub = this.g.subs.get(id.text);
@@ -576,7 +579,7 @@ export class CodegenCtx implements ICtx {
         }
         // TODO: check args
         // Parameters are passed by reference. We need to create temporary variables for non-variable parameters.
-        const argNames = [];
+        const argNames: string[] = [];
         let tempArgCount = 0;
         for (const arg of args) {
             if (!arg) return;
@@ -591,7 +594,7 @@ export class CodegenCtx implements ICtx {
                 tempArgCount++;
             }
         }
-        sub.calls.push(this.write(vm.InstructionID.CALL_SUB, 0/*pc*/, argNames));
+        sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, argNames));
         this.tempVarCount -= tempArgCount;
     }
     callFunction(id: string, args: Val[]): Val {
@@ -622,7 +625,7 @@ export class CodegenCtx implements ICtx {
                 this.error("Expected basic type");
                 return;
             }
-            inputs.push(new vm.SingleInput(v.type.type, this.nextStackOffset()));
+            inputs.push(new vm.SingleInput(v.baseType(), this.nextStackOffset()));
         }
         this.write(vm.InstructionID.INPUT, new vm.InputSpec(keepCursor, prompt, inputs));
         for (let i = 0; i < args.length; i++) {
@@ -632,24 +635,25 @@ export class CodegenCtx implements ICtx {
     ifBegin(cond: Val) {
         cond = this.stackify(cond);
         const flow = new CtrlFlow(CtrlFlowType.kIF);
-        flow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, cond.stackOffset, 0/*filled in later*/);
+        flow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0/*filled in later*/, cond);
         this.ctrlFlowStack.push(flow);
     }
     elseBegin(cond?: Val) {
         const flow = this.ctrlFlow(CtrlFlowType.kIF);
-        flow.endInstructions.push(this.write(vm.InstructionID.BRANCH, 0/*filled in later*/));
-        flow.branchInst.args[1] = this.g.program.inst.length;
+        if (!flow) return; // should be caught by parser.
+        flow.endInstructions.push(this.emit(vm.InstructionID.BRANCH, 0/*filled in later*/));
+        if (flow.branchInst) flow.branchInst.args[0] = this.g.program.inst.length;
         if (cond) {
-            flow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, this.stackify(cond).stackOffset, 0/*filled in later*/);
+            flow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0/*filled in later*/, cond);
         } else {
-            flow.branchInst = null;
+            flow.branchInst = undefined;
         }
     }
     ifEnd() {
         const flow = this.ctrlFlow(CtrlFlowType.kIF);
         if (!flow) return;
         if (flow.branchInst) {
-            flow.branchInst.args[1] = this.g.program.inst.length;
+            flow.branchInst.args[0] = this.g.program.inst.length;
         }
         for (const ei of flow.endInstructions) {
             ei.args[0] = this.g.program.inst.length;
@@ -666,7 +670,7 @@ export class CodegenCtx implements ICtx {
         step = step ? this.stackify(step) : this.constNumber(1, idx.type);
         to = this.stackify(to);
         const condVal = this.newStackValue(kIntType);
-        const branch0 = this.write(vm.InstructionID.BRANCH, 0);
+        const branch0 = this.emit(vm.InstructionID.BRANCH, 0);
         ctrlFlow.loopStart = this.g.program.inst.length;
         const idxOnStack = this.stackify(idx);
         this.write(vm.InstructionID.ADD, idxOnStack, idxOnStack, step);
@@ -674,20 +678,21 @@ export class CodegenCtx implements ICtx {
         branch0.args[0] = this.g.program.inst.length;
         this.loadVar(idxOnStack.stackOffset, idx); // This has no effect except for first pass where STEP isn't applied.
         this.write(vm.InstructionID.LTE, condVal, idxOnStack, to);
-        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, condVal, 0);
+        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, condVal);
         this.ctrlFlowStack.push(ctrlFlow);
     }
     forExit() {
         const flow = this.ctrlFlow(CtrlFlowType.kFOR);
         if (flow) {
-            flow.endInstructions.push(this.write(vm.InstructionID.BRANCH, 0));
+            flow.endInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
         }
     }
     forEnd() {
         const flow = this.ctrlFlow(CtrlFlowType.kFOR);
+        if (!flow) return;
         this.ctrlFlowStack.pop();
         this.write(vm.InstructionID.BRANCH, flow.loopStart);
-        flow.branchInst.args[1] = this.g.program.inst.length;
+        if (flow.branchInst) flow.branchInst.args[0] = this.g.program.inst.length;
         for (const ei of flow.endInstructions) {
             ei.args[0] = this.g.program.inst.length;
         }
@@ -695,13 +700,13 @@ export class CodegenCtx implements ICtx {
     doBegin(whileCond: Val) {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kDO);
         ctrlFlow.loopStart = this.program().inst.length;
-        if (whileCond) {
-            ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, whileCond, 0);
-        }
+        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, whileCond);
         this.ctrlFlowStack.push(ctrlFlow);
     }
     doExit() {
-        this.ctrlFlow(CtrlFlowType.kDO).endInstructions.push(this.write(vm.InstructionID.BRANCH, 0));
+        const flow = this.ctrlFlow(CtrlFlowType.kDO);
+        if (!flow) return;
+        flow.endInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
     }
     doEnd(untilCond: Val) {
         const flow = this.ctrlFlow();
@@ -709,13 +714,13 @@ export class CodegenCtx implements ICtx {
             return; // should be caught by parser.
         }
         if (untilCond) {
-            this.write(vm.InstructionID.BRANCH_IFNOT, untilCond, flow.loopStart);
+            this.write(vm.InstructionID.BRANCH_IFNOT, flow.loopStart, untilCond);
         } else {
             this.write(vm.InstructionID.BRANCH, flow.loopStart);
         }
         const endPC = this.program().inst.length;
         if (flow.branchInst) {
-            flow.branchInst.args[1] = endPC;
+            flow.branchInst.args[0] = endPC;
         }
         for (const ei of flow.endInstructions) {
             ei.args[0] = endPC;
@@ -725,7 +730,7 @@ export class CodegenCtx implements ICtx {
     whileBegin(whileCond: Val) {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kWHILE);
         ctrlFlow.loopStart = this.program().inst.length;
-        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, whileCond, 0);
+        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, whileCond);
         this.ctrlFlowStack.push(ctrlFlow);
     }
     wend() {
@@ -736,21 +741,19 @@ export class CodegenCtx implements ICtx {
         this.write(vm.InstructionID.BRANCH, flow.loopStart);
         const endPC = this.program().inst.length;
         if (flow.branchInst) {
-            flow.branchInst.args[1] = endPC;
+            flow.branchInst.args[0] = endPC;
         }
         this.ctrlFlowStack.pop();
     }
     gotoLine(no: number, tok: Token) {
-        const g = new GotoInfo();
+        const g = new GotoInfo(this.emit(vm.InstructionID.BRANCH, 0));
         g.lineNumber = no;
-        g.inst = this.write(vm.InstructionID.BRANCH, 0);
         g.token = tok;
         this.g.gotos.push(g);
     }
     gotoLabel(lbl: Token) {
-        const g = new GotoInfo();
+        const g = new GotoInfo(this.emit(vm.InstructionID.BRANCH, 0));
         g.label = lbl.text;
-        g.inst = this.write(vm.InstructionID.BRANCH, 0);
         g.token = lbl;
         this.g.gotos.push(g);
     }
@@ -879,7 +882,7 @@ export class CodegenCtx implements ICtx {
         }
     }
     private assign(variable: Val, stackPos: number) {
-        let index: number[] = null;
+        let index: number[] | undefined;
         if (variable.index) {
             index = variable.index.map((i) => this.stackify(i).stackOffset);
         }
@@ -892,18 +895,18 @@ export class CodegenCtx implements ICtx {
     private constNumber(n: number, ty: Type): Val {
         return this.stackify(Val.newNumberLiteral(n, ty));
     }
-    private ctrlFlow(type?: CtrlFlowType): CtrlFlow {
+    private ctrlFlow(type?: CtrlFlowType): CtrlFlow | undefined {
         if (!type && this.ctrlFlowStack.length) return this.ctrlFlowStack[this.ctrlFlowStack.length - 1];
         for (let i = this.ctrlFlowStack.length - 1; i >= 0; i--) {
             if (this.ctrlFlowStack[i].type === type) return this.ctrlFlowStack[i];
         }
-        return null;
+        return undefined;
     }
     private nextStackOffset(): number {
         return this.stackOffset++;
     }
     private autoVarKey(v: Val): string {
-        return v.type.type === BaseType.kSingle ? v.varName : v.varName + baseTypeToSigil(v.type.type);
+        return v.baseType() === BaseType.kSingle ? v.varName : v.varName + baseTypeToSigil(v.baseType());
     }
     private varAddr(v: Val): string {
         if (v.isVar()) {
@@ -922,7 +925,7 @@ export class CodegenCtx implements ICtx {
         return Val.newStackValue(ty, this.nextStackOffset());
     }
     private loadVar(stackIndex: number, variable: Val) {
-        let index: number[] = null;
+        let index: number[] | undefined;
         if (variable.index) {
             index = variable.index.map((i) => this.stackify(i).stackOffset);
         }
@@ -939,9 +942,8 @@ export class CodegenCtx implements ICtx {
         if (v.isLiteral() || v.isConst()) {
             // Literals and const values can be converted to a const data offset.
             const key = CodegenCtx.valConstKey(v);
-            if (this.g.constantVals.has(key)) {
-                return this.g.constantVals.get(key);
-            }
+            const constVal = this.g.constantVals.get(key);
+            if (constVal) return constVal;
             const vv = CodegenCtx.literalVarVal(v);
             const addr = -this.g.program.data.length;
             this.g.program.data.push(vv);
@@ -975,14 +977,14 @@ export class CodegenCtx implements ICtx {
         // harvest the output.
         const program = new vm.Program();
         const instArgs = [0];
-        program.data.push(null);
+        program.data.push(vm.VariableValue.single(kIntType, 0));
         for (let i = 1; i < args.length; i++) {
             const a = args[i] as Val;
             program.data.push(CodegenCtx.literalVarVal(a));
             instArgs.push(-i);
         }
         program.inst.push(new vm.Instruction(id, instArgs));
-        const exe = new vm.Execution(program, null);
+        const exe = new vm.Execution(program, new vm.NullPC());
         exe.run();
         const result = exe.stack[0] as vm.VariableValue;
         if (lhs.type === kStringType) {
@@ -993,7 +995,7 @@ export class CodegenCtx implements ICtx {
     }
     // Write an instruction to the program. Because many instructions take stack indices as arguments,
     // as a convenience, args of type Val are automatically pushed to the stack and converted to stack indices.
-    private write(id: vm.InstructionID, ...args: any[]): vm.Instruction {
+    private write(id: vm.InstructionID, ...args: any[]): vm.Instruction | undefined {
         // Attempt a compile time eval.
         const constResult = this.constExpr(id, ...args);
         if (constResult) {
@@ -1003,9 +1005,25 @@ export class CodegenCtx implements ICtx {
                 lhs.kind = constResult.kind;
                 lhs.stringValue = constResult.stringValue;
                 lhs.numberValue = constResult.numberValue;
-                return null;
+                return undefined;
             }
         }
+        if (id === vm.InstructionID.BRANCH_IFNOT) { // optimize for fun
+            const v = args[1] as Val;
+            const val = v.constNumberValue();
+            if (val !== undefined) {
+                if (!v.numberValue) {
+                    id = vm.InstructionID.BRANCH;
+                    args.pop();
+                } else {
+                    return undefined;
+                }
+            }
+        }
+        return this.emit(id, ...args);
+    }
+    // Like write, but ensures the instruction is not optimized away.
+    private emit(id: vm.InstructionID, ...args: any[]): vm.Instruction {
         for (let i = 0; i < args.length; i++) {
             // convenience conversion
             if (args[i] instanceof Val) {

@@ -31,7 +31,8 @@ export function sigilToBaseType(sigil: string): BaseType {
     return BaseType.kNone;
 }
 
-export function baseTypeToSigil(b: BaseType): string {
+export function baseTypeToSigil(b?: BaseType): string {
+    if (!b) return "";
     if (b === BaseType.kString) return "$";
     if (b === BaseType.kInt) return "%";
     if (b === BaseType.kLongInt) return "&";

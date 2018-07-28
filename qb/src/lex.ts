@@ -35,7 +35,7 @@ export enum TokenType {
 
 export class Token {
     public locus: Location;
-    constructor(public id: TokenType, public text, public loc: Location) { }
+    constructor(public id: TokenType, public text: string, public loc: Location) { }
     toString(): string {
         return "Token(" + this.text + ")";
     }
@@ -91,15 +91,15 @@ class MatchResult {
     constructor(public tok: Token, public remainingText: string) { }
 }
 
-function matchToken(tt: TokenType, re: RegExp, s: LexState): Token {
+function matchToken(tt: TokenType, re: RegExp, s: LexState): Token | undefined {
     const m = re.exec(s.text);
-    if (!m) { return null; }
+    if (!m) { return undefined; }
     return s.advanceWithTok(tt, m[0].length);
 }
 
 export function lex(text: string): Token[] {
     const lines = text.split("\n");
-    const tokens = [];
+    const tokens: Token[] = [];
     for (let i = 0; i < lines.length; i++) {
         const s = new LexState(lines[i], new Location(i, 0));
         while (s.text.length > 0) {

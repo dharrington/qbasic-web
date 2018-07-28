@@ -28,7 +28,7 @@ function testProgram(programPath: string) {
     const fileText = buf.toString();
     const parts = fileText.split("\nREM output\n");
     let programText = fileText;
-    let desiredOutput: string;
+    let desiredOutput: string | undefined;
     if (parts.length === 2) {
         [programText, desiredOutput] = parts;
     }
@@ -85,8 +85,19 @@ function runSuccess(program: string, expectOutput: string) {
         return;
     }
     failCount++;
-    console.log(`Output for program:\n${program}\n----\nGot:\n----------\n${visualizeWhitespace(pc.textOutput)}\n----------\nWant:\n----------\n${visualizeWhitespace(expectOutput)}`);
-    console.log(`----\nProgram code:\n${ctx.program().toString()}`);
+    console.log(`Output for program:
+${program}
+-------------------------------------------------------------------------------
+Got:
+-------------------------------------------------------------------------------
+${visualizeWhitespace(pc.textOutput)}
+-------------------------------------------------------------------------------
+Want:
+-------------------------------------------------------------------------------
+${visualizeWhitespace(expectOutput)}
+-------------------------------------------------------------------------------
+Program code:
+${ctx.program().toString()}`);
     passCount++;
 }
 
