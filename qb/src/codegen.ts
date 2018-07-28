@@ -138,8 +138,14 @@ export class CodegenCtx implements ICtx {
                 vv.val = lit.stringValue;
                 break;
             case BaseType.kInt:
+                vv.val = vm.toInt(lit.numberValue);
+                break;
             case BaseType.kLongInt:
+                vv.val = vm.toLong(lit.numberValue);
+                break;
             case BaseType.kSingle:
+                vv.val = Math.fround(lit.numberValue);
+                break;
             case BaseType.kDouble:
                 vv.val = lit.numberValue;
                 break;
@@ -206,13 +212,13 @@ export class CodegenCtx implements ICtx {
         this.stackOffset = 0;
     }
     // Returns a Val that represents a named variable.
-    variable(varName: Token, baseType?: BaseType): Val {
+    variable(varName: Token, sigil: BaseType, defaultType: Type): Val {
         // If a variable is defined by DIM or CONST, only a single variable can use that name.
         // Otherwise, an 'auto' variable of each basic type can be used with the same name (X%, X$, etc...)
         {
             const dimVar = this.dimVars.get(varName.text);
             if (dimVar) {
-                if (baseType === BaseType.kNone || dimVar.baseType() === baseType) {
+                if (sigil === BaseType.kNone || dimVar.baseType() === sigil) {
                     return dimVar;
                 } else {
                     this.error("duplicate definition", varName.loc);
@@ -223,7 +229,7 @@ export class CodegenCtx implements ICtx {
         {
             const constVar = this.constVars.get(varName.text);
             if (constVar) {
-                if (baseType === BaseType.kNone || constVar.baseType() === baseType) {
+                if (sigil === BaseType.kNone || constVar.baseType() === sigil) {
                     return constVar;
                 } else {
                     this.error("duplicate definition", varName.loc);
@@ -231,10 +237,10 @@ export class CodegenCtx implements ICtx {
                 }
             }
         }
-        const key = varName.text + baseTypeToSigil(baseType);
+        const key = varName.text + baseTypeToSigil(sigil);
         const autoVar = this.autoVars.get(key);
         if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, basicType(baseType) || kIntType);
+        const v = Val.newVar(varName.text, defaultType);
         this.autoVars.set(key, v);
 
         // Write declaration instruction.

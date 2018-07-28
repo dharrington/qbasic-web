@@ -55,7 +55,7 @@ export class Type {
         t.type = baseType;
         return t;
     }
-    static basic(baseType: BaseType): Type | null {
+    static basic(baseType: BaseType): Type | undefined {
         switch (baseType) {
             case BaseType.kInt: return kIntType;
             case BaseType.kString: return kStringType;
@@ -63,7 +63,7 @@ export class Type {
             case BaseType.kSingle: return kSingleType;
             case BaseType.kLongInt: return kLongType;
         }
-        return null;
+        return undefined;
     }
     public type: BaseType;
     public fields: UserTypeField[];

@@ -152,7 +152,7 @@ export interface ICtx {
     lineNumber(num: number, tok: Token);
     newline(lineNumber: number);
     data(dataArray: Val[]);
-    variable(varName: Token, baseType?: BaseType): Val | undefined;
+    variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
     index(v: Val, idx: Val[]): Val;
     dim(name: Token, size?: number[], ty?: Type);
@@ -220,20 +220,20 @@ export class NullCtx implements ICtx {
     lineNumber(num: number, tok: Token) { }
     newline(num: number) { }
     data(dataArray: Val[]) { }
-    variable(varName: Token, baseType?: BaseType): Val | undefined {
+    variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined {
         const dimVar = this.dimVars.get(varName.text);
         if (dimVar) {
-            if (baseType === BaseType.kNone || dimVar.type.type === baseType) {
+            if (sigil === BaseType.kNone || dimVar.type.type === sigil) {
                 return dimVar;
             } else {
                 this.error("duplicate definition", varName.loc);
                 return undefined;
             }
         }
-        const key = varName.text + baseTypeToSigil(baseType);
+        const key = varName.text + baseTypeToSigil(sigil);
         const autoVar = this.autoVars.get(key);
         if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, basicType(baseType) || kIntType);
+        const v = Val.newVar(varName.text, defaultType);
         this.autoVars.set(key, v);
         return v;
     }
@@ -323,6 +323,8 @@ class Parser {
     private controlNesting = 0;
     private isEnd = false;
     private openBlocks: Block[] = [];
+    // DEFINT etc... map from first letter to base type.
+    private defaultVarTypes = new Map<string, Type>();
     constructor(private ctx: ICtx, private tokens: Token[]) {
     }
     currentBlock(): Block | undefined {
@@ -467,10 +469,10 @@ class Parser {
         return undefined;
     }
 
-    abs(): Val {
+    abs(): Val | undefined {
         this.expectIdent("ABS");
         const args = this.callArgsWithTypes([kDoubleType]);
-        if (!args) return kNullVal;
+        if (!args) return undefined;
         return this.ctx.op("ABS", args);
     }
     maybeFunctionCall(): Val | undefined {
@@ -490,7 +492,7 @@ class Parser {
         this.next(tokenCount);
         const args = this.callArgsWithTypes(func.argTypes, func.argTypes.length - func.optionalParameters);
         if (!args) {
-            return kNullVal;
+            return undefined;
         }
         return this.ctx.callFunction(id, args);
     }
@@ -583,19 +585,15 @@ class Parser {
 
     maybeVarname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
         if (this.tok().id !== TokenType.kIdent) return undefined;
-        const id = this.expectIdent();
-        if (!id) return undefined;
-        let v = this.ctx.variable(id, this.maybeSigil());
-        if (v && allowIndex && this.tok().isOp("(")) {
-            v = this.ctx.index(v, this.arrayIndex());
-        }
-        return v;
+        return this.varname();
     }
 
     varname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
         const id = this.expectIdent();
         if (!id) return undefined;
-        let v = this.ctx.variable(id, this.maybeSigil());
+        const sig = this.maybeSigil();
+        const defaultType: Type = Type.basic(sig) || this.defaultVarTypes.get(id.text[0]) || kSingleType;
+        let v = this.ctx.variable(id, sig, defaultType);
         if (v && allowIndex && this.tok().isOp("(")) {
             v = this.ctx.index(v, this.arrayIndex());
         }
@@ -918,6 +916,60 @@ class Parser {
         this.expectIdent("SCREEN");
         const id = this.numericExpr();
         if (id) this.ctx.screen(id);
+    }
+    letter(): string | undefined {
+        if (!this.tok(0).isIdent()) { this.error("expected letter"); return undefined; }
+        const txt = this.tok(0).text;
+        if (!/[A-Z]/.test(txt)) { this.error("expected letter"); return undefined; }
+        this.next();
+        return txt;
+    }
+    letterRange(): Set<string> | undefined { // A[-Z]
+        const a = this.letter();
+        if (!a) return undefined;
+        if (!this.nextIf("-")) return new Set([a]);
+        const z = this.letter();
+        if (!z) return undefined;
+        if (z.charCodeAt(0) < a.charCodeAt(0)) {
+            this.error("invalid range");
+            return undefined;
+        }
+        const result = new Set<string>();
+        for (let i = a.charCodeAt(0); i <= z.charCodeAt(0); i++) {
+            result.add(String.fromCharCode(i));
+        }
+        return result;
+    }
+    letterRanges(): Set<string> | undefined { // A-C, G-H
+        let range: Set<string> | undefined;
+        while (true) {
+            const r = this.letterRange();
+            if (!r) return undefined;
+            if (range) {
+                for (const v of r) range.add(v);
+            } else range = r;
+            if (!this.nextIf(",")) return range;
+        }
+    }
+    defABCStmt() {
+        let ty: Type | undefined;
+        switch (this.tok().text) {
+            case "DEFINT": ty = kIntType; break;
+            case "DEFLNG": ty = kLongType; break;
+            case "DEFSNG": ty = kSingleType; break;
+            case "DEFDBL": ty = kDoubleType; break;
+            case "DEFSTR": ty = kStringType; break;
+            default: {
+                this.error("expected DEFXYZ"); // should not happen.
+                return;
+            }
+        }
+        this.next();
+        const range = this.letterRanges();
+        if (!range) return;
+        for (const c of range) {
+            this.defaultVarTypes.set(c, ty);
+        }
     }
     color() { // COLOR [<fore>][, <back>]
         this.expectIdent("COLOR");
@@ -1363,6 +1415,11 @@ class Parser {
                 switch (this.tok().text) {
                     case "IF": this.ifstmt(moduleLevel, allowHardNewline); break;
                     case "SCREEN": this.screenstmt(); break;
+                    case "DEFINT":
+                    case "DEFSTR":
+                    case "DEFSNG":
+                    case "DEFLNG":
+                    case "DEFDBL": this.defABCStmt(); break;
                     case "FOR": this.forStmt(); break;
                     case "NEXT": this.nextStmt(); break;
                     case "EXIT": this.exit(); break;

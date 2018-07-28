@@ -324,6 +324,15 @@ export class VariableValue {
         return VariableValue.single(this.type, this.arrayVals[offset]);
     }
     setVal(val: number | string, index?: number[]) {
+        // TODO: Maybe move this work over to codegen so that inputs here are guaranteed to be the right type.
+        if (this.type === kIntType) {
+            val = toInt(val as number);
+        } else if (this.type === kLongType) {
+            val = toLong(val as number);
+        } else if (this.type === kSingleType) {
+            val = Math.fround(val as number);
+        }
+
         if (!index) {
             this.val = val;
         } else {

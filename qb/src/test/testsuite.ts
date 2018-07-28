@@ -24,6 +24,7 @@ import * as path from "path";
 let passCount = 0;
 let failCount = 0;
 function testProgram(programPath: string) {
+    console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
     const parts = fileText.split("\nREM output\n");
@@ -61,7 +62,7 @@ function runSuccess(program: string, expectOutput: string) {
     parse(ctx, tokens);
     const pc = new DebugPC();
     const exe = new vm.Execution(ctx.program(), pc);
-    if (ctx.errors.length > 0) {
+    if (ctx.errors().length > 0) {
         console.log(`Compile errors in program:\n${program}\n----\n`);
         for (const e of ctx.errors()) {
             console.log(`  ${e}`);
