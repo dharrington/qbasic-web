@@ -94,8 +94,22 @@ export class Type {
     toString(): string {
         return BaseType[this.type];
     }
+    lookupField(name: string): UserTypeField | undefined {
+        if (!this.fields) return undefined;
+        for (const f of this.fields) {
+            if (f.name === name) return f;
+        }
+        return undefined;
+    }
+    lookupFieldOffset(name: string): number | undefined {
+        if (!this.fields) return undefined;
+        for (let i = 0; i < this.fields.length; i++) {
+            if (this.fields[i].name === name) return i;
+        }
+        return undefined;
+    }
 }
-
+export const kNoneType = Type.makeBasic(BaseType.kNone);
 export const kIntType = Type.makeBasic(BaseType.kInt);
 export const kStringType = Type.makeBasic(BaseType.kString);
 export const kDoubleType = Type.makeBasic(BaseType.kDouble);

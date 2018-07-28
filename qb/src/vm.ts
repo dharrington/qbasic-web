@@ -86,7 +86,7 @@ export enum InstructionID {
     // name = variable name (string)
     // pos = array index: array of stack index (number[])
     // For instructions that write to a stack value, the output is the first parameter.
-    LOAD_VARVAL, // S name [pos]
+    LOAD_VARVAL, // S name [pos] [fieldIndex ...]
     LOAD_ARGVAL, // S name [pos]
     DECLARE_VAR, // name V
     ASSIGN_VAR, // name S [pos]
@@ -254,6 +254,8 @@ export function zeroValue(ty: Type): any {
 }
 
 class IndexOutOfRange { }
+type UserTypeValue = any[];
+type RawValue = number | string | UserTypeValue | undefined;
 
 // A variable value as understood by vm.
 // This can represent temporary values as well as named variables (including arrays).
@@ -262,7 +264,7 @@ class IndexOutOfRange { }
 // it may be better to separate the two in the future.
 export class VariableValue {
     // Create a single (non-array) value.
-    static single(type: Type, val: number | string) {
+    static single(type: Type, val: RawValue) {
         const v = new VariableValue(type);
         v.val = val;
         return v;
@@ -279,8 +281,27 @@ export class VariableValue {
     static newLong(val: number): VariableValue {
         return VariableValue.single(kLongType, val);
     }
+    private static valToType(val: RawValue, type: Type) {
+        // TODO: Maybe move this work over to codegen so that inputs here are guaranteed to be the right type.
+        if (type === kIntType) {
+            return toInt(val as number);
+        } else if (type === kLongType) {
+            return toLong(val as number);
+        } else if (type === kSingleType) {
+            return Math.fround(val as number);
+        }
+        return val;
+    }
+    private static fieldType(type: Type, fieldIndex: number[]): Type {
+        let t = type;
+        for (let i = 0; i < fieldIndex.length - 1; i++) {
+            const idx = fieldIndex[i];
+            t = t.fields[idx].type;
+        }
+        return t.fields[fieldIndex[fieldIndex.length - 1]].type;
+    }
     // Even arrays in basic have an additional non-array value of the same type.
-    public val: any;
+    public val: RawValue;
     public dims?: number[];
     public arrayVals?: any[];
     constructor(public type: Type) { }
@@ -288,6 +309,9 @@ export class VariableValue {
         const dimStr = this.dims ? "(" + this.dims.map((x) => "" + x).join(", ") + ")" : "";
         return `'${this.val}' ${this.type} ${dimStr}`;
     }
+    anyval(): any { return this.val; }
+    numVal(): number { return this.val as number; }
+    strVal(): string { return this.val as string; }
     toShortString(): string {
         const dimStr = this.dims ? "(" + this.dims.map((x) => "" + x).join(", ") + ")" : "";
         let typeStr = "";
@@ -314,27 +338,29 @@ export class VariableValue {
         }
         return offset;
     }
-    valAtIndex(index: number[]): VariableValue | IndexOutOfRange {
+    valAtIndex(index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange {
         // Array values are initialized lazily...
+        if (!index) {
+            if (fieldIndex) {
+                return this.getField(this.val as RawValue[], fieldIndex);
+            } else {
+                return new IndexOutOfRange();
+            }
+        }
         const offset = this.indexOffset(index);
         if (offset instanceof IndexOutOfRange) return offset;
         if (!this.arrayVals || offset >= this.arrayVals.length) {
-            return VariableValue.single(this.type, zeroValue(this.type));
+            const lhs = zeroValue(this.type);
+            if (fieldIndex) return this.getField(lhs as RawValue[], fieldIndex);
+            return VariableValue.single(this.type, lhs);
         }
+        if (fieldIndex) return this.getField(this.arrayVals[offset] as RawValue[], fieldIndex);
         return VariableValue.single(this.type, this.arrayVals[offset]);
     }
-    setVal(val: number | string, index?: number[]) {
-        // TODO: Maybe move this work over to codegen so that inputs here are guaranteed to be the right type.
-        if (this.type === kIntType) {
-            val = toInt(val as number);
-        } else if (this.type === kLongType) {
-            val = toLong(val as number);
-        } else if (this.type === kSingleType) {
-            val = Math.fround(val as number);
-        }
-
+    setVal(val: RawValue, index?: number[], fieldIndex?: number[]) {
         if (!index) {
-            this.val = val;
+            if (fieldIndex) this.setField(this.val as RawValue[], val, fieldIndex);
+            else this.val = VariableValue.valToType(val, this.type);
         } else {
             const offset = this.indexOffset(index);
             if (offset instanceof IndexOutOfRange) return offset;
@@ -342,9 +368,11 @@ export class VariableValue {
             while (offset >= this.arrayVals.length) {
                 this.arrayVals.push(zeroValue(this.type));
             }
-            this.arrayVals[offset] = val;
+            if (fieldIndex) this.setField(this.arrayVals[offset], val, fieldIndex);
+            else this.arrayVals[offset] = VariableValue.valToType(val, this.type);
         }
     }
+
     isZero(): boolean {
         return !this.val; // should only be called for numeric types.
     }
@@ -356,6 +384,38 @@ export class VariableValue {
     }
     getString(): string {
         return this.val as string;
+    }
+    private getField(lhs: RawValue[], fieldIndex: number[]): VariableValue {
+        let t = this.type;
+        for (let i = 0; i < fieldIndex.length; i++) {
+            const idx = fieldIndex[i];
+            if (lhs.length <= idx) {
+                break;
+            }
+            if (i === fieldIndex.length - 1) {
+                return VariableValue.single(t.fields[idx].type, lhs[idx]);
+            } else {
+                t = t.fields[idx].type;
+                lhs = lhs[idx] as RawValue[];
+            }
+        }
+        const ft = VariableValue.fieldType(this.type, fieldIndex);
+        return VariableValue.single(ft, zeroValue(ft));
+    }
+    private setField(lhs: RawValue[], val: RawValue, fieldIndex: number[]) {
+        let t = this.type;
+        for (let i = 0; i < fieldIndex.length; i++) {
+            const idx = fieldIndex[i];
+            while (lhs.length <= idx) {
+                lhs.push(zeroValue(t.fields[lhs.length].type));
+            }
+            if (i === fieldIndex.length - 1) {
+                lhs[idx] = VariableValue.valToType(val, t.fields[idx].type);
+            } else {
+                t = t.fields[idx].type;
+                lhs = lhs[idx] as RawValue[];
+            }
+        }
     }
 }
 
@@ -408,14 +468,14 @@ class Frame {
     // onto the calling code's variable name.
     public foreignArgNames: string[];
 
-    readVar(name: string, index?: number[]): VariableValue | IndexOutOfRange {
+    readVar(name: string, index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange {
         const v = this.vars.get(name);
         if (!v) {
             console.log("internal error");
             return zeroValue(kSingleType); // should not happen.
         }
-        if (!index) return v;
-        return v.valAtIndex(index);
+        if (!index && !fieldIndex) return v;
+        return v.valAtIndex(index, fieldIndex);
     }
 }
 
@@ -549,12 +609,13 @@ export class Execution {
             case InstructionID.LOAD_VARVAL: {
                 const idx = args[0];
                 const varName = args[1];
-                const posStackIndices = args[2] as number[];
+                const posStackIndices = args[2] as number[] | undefined;
+                const fieldIndices = args[3] as number[] | undefined;
                 let index: number[] | undefined;
                 if (posStackIndices) {
-                    index = posStackIndices.map((i) => this.readVal(i).val);
+                    index = posStackIndices.map((i) => this.readVal(i).val as number);
                 }
-                const value = this.frame.readVar(varName, index);
+                const value = this.frame.readVar(varName, index, fieldIndices);
                 if (value instanceof IndexOutOfRange) {
                     this.frame.pc--;
                     this.raise("index out of range");
@@ -595,11 +656,10 @@ export class Execution {
                     break;
                 }
                 const val = this.readVal(args[1]);
-                const index = args.length > 2 ? args[2] as number[] : null;
-                if (!index) v.setVal(val.val);
-                else {
-                    v.setVal(val.val, index.map((i) => this.readVal(i).getNumber()));
-                }
+                let index = args.length > 2 ? args[2] as number[] : undefined;
+                if (index) index = index.map((i) => this.readVal(i).getNumber());
+                const fieldIndex = args.length > 3 ? args[3] as number[] : undefined;
+                v.setVal(val.val, index, fieldIndex);
                 break;
             }
             case InstructionID.ASSIGN_ARG: {
@@ -624,42 +684,42 @@ export class Execution {
             case InstructionID.ADD: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.single(a.type, a.val + b.val));
+                this.save(args[0], VariableValue.single(a.type, a.anyval() + b.anyval()));
                 break;
             }
             case InstructionID.SUB: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.single(a.type, a.val - b.val));
+                this.save(args[0], VariableValue.single(a.type, a.anyval() - b.anyval()));
                 break;
             }
             case InstructionID.NEG: {
                 const a = this.readVal(args[1]);
-                this.save(args[0], VariableValue.single(a.type, -a.val));
+                this.save(args[0], VariableValue.single(a.type, -a.anyval()));
                 break;
             }
             case InstructionID.MUL: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.single(a.type, a.val * b.val));
+                this.save(args[0], VariableValue.single(a.type, a.anyval() * b.anyval()));
                 break;
             }
             case InstructionID.DIV: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newDouble(a.val / b.val));
+                this.save(args[0], VariableValue.newDouble(a.anyval() / b.anyval()));
                 break;
             }
             case InstructionID.IDIV: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newLong(Math.floor(a.val / b.val)));
+                this.save(args[0], VariableValue.newLong(Math.floor(a.anyval() / b.anyval())));
                 break;
             }
             case InstructionID.MOD: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newLong(Math.floor(a.val) % Math.floor(b.val)));
+                this.save(args[0], VariableValue.newLong(Math.floor(a.anyval()) % Math.floor(b.anyval())));
                 break;
             }
             case InstructionID.EQ: {
@@ -677,48 +737,48 @@ export class Execution {
             case InstructionID.GTE: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newInt((a.val >= b.val) ? -1 : 0));
+                this.save(args[0], VariableValue.newInt((a.anyval() >= b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.LTE: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newInt((a.val <= b.val) ? -1 : 0));
+                this.save(args[0], VariableValue.newInt((a.anyval() <= b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.GT: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newInt((a.val > b.val) ? -1 : 0));
+                this.save(args[0], VariableValue.newInt((a.anyval() > b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.LT: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newInt((a.val < b.val) ? -1 : 0));
+                this.save(args[0], VariableValue.newInt((a.anyval() < b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.OR: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newLong(a.val | b.val));
+                this.save(args[0], VariableValue.newLong(a.anyval() | b.anyval()));
                 break;
             }
             case InstructionID.AND: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newLong(a.val & b.val));
+                this.save(args[0], VariableValue.newLong(a.anyval() & b.anyval()));
                 break;
             }
             case InstructionID.XOR: {
                 const a = this.readVal(args[1]);
                 const b = this.readVal(args[2]);
-                this.save(args[0], VariableValue.newLong(a.val ^ b.val));
+                this.save(args[0], VariableValue.newLong(a.anyval() ^ b.anyval()));
                 break;
             }
             case InstructionID.NOT: {
                 const a = this.readVal(args[1]);
-                this.save(args[0], VariableValue.newLong(~a.val));
+                this.save(args[0], VariableValue.newLong(~a.anyval()));
                 break;
             }
             case InstructionID.LOGICNOT: {
@@ -727,23 +787,23 @@ export class Execution {
                 break;
             }
             case InstructionID.TO_INT:
-                this.save(args[0], VariableValue.newInt(toInt(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newInt(toInt(this.readVal(args[1]).val as number)));
                 break;
             case InstructionID.TO_LONG:
-                this.save(args[0], VariableValue.newLong(toLong(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newLong(toLong(this.readVal(args[1]).val as number)));
                 break;
             case InstructionID.TO_SINGLE:
-                this.save(args[0], VariableValue.single(kSingleType, toInt(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.single(kSingleType, toInt(this.readVal(args[1]).val as number)));
                 break;
             case InstructionID.TO_DOUBLE:
-                this.save(args[0], VariableValue.single(kDoubleType, toInt(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.single(kDoubleType, toInt(this.readVal(args[1]).val as number)));
                 break;
             case InstructionID.PRINT: {
                 for (const arg of args) {
                     const argVal = this.readVal(arg);
                     switch (argVal.type.type) {
                         case BaseType.kSingle: {
-                            this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val)));
+                            this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val as number)));
                             break;
                         }
                         case BaseType.kString: {
@@ -759,8 +819,8 @@ export class Execution {
                 break;
             }
             case InstructionID.LOCATE: {
-                this.vpc.locate(args[0] ? this.readVal(args[0]).val : null,
-                    args[1] ? this.readVal(args[1]).val : null);
+                this.vpc.locate(args[0] ? this.readVal(args[0]).anyval() : null,
+                    args[1] ? this.readVal(args[1]).anyval() : null);
                 break;
             }
             case InstructionID.INPUT: {
@@ -808,8 +868,8 @@ export class Execution {
             }
             case InstructionID.ABS: {
                 const val = this.readVal(args[1]).copySingle();
-                if (val.val < 0) {
-                    val.val = -val.val;
+                if (val.anyval() < 0) {
+                    val.val = -val.anyval();
                 }
                 this.save(args[0], val); // TODO: Overflow
                 break;
@@ -818,23 +878,23 @@ export class Execution {
                 const val = this.readVal(args[1]).copySingle();
                 const offset = this.readVal(args[2]);
                 if (args.length > 3) {
-                    val.val = (val.val as string).substr(offset.val, this.readVal(args[3]).val);
+                    val.val = (val.val as string).substr(offset.anyval(), this.readVal(args[3]).anyval());
                 } else {
-                    val.val = (val.val as string).substr(offset.val);
+                    val.val = (val.val as string).substr(offset.anyval());
                 }
                 this.save(args[0], val);
                 break;
             }
             case InstructionID.LEFT: {
                 const val = this.readVal(args[1]).copySingle();
-                const n = Math.abs(this.readVal(args[2]).val);
+                const n = Math.abs(this.readVal(args[2]).anyval());
                 val.val = (val.val as string).substr(0, n);
                 this.save(args[0], val);
                 break;
             }
             case InstructionID.RIGHT: {
                 const val = this.readVal(args[1]).copySingle();
-                const n = Math.abs(this.readVal(args[2]).val);
+                const n = Math.abs(this.readVal(args[2]).anyval());
                 const str = (val.val as string);
                 if (str.length > n) {
                     val.val = str.substr(str.length - n);
@@ -843,7 +903,7 @@ export class Execution {
                 break;
             }
             case InstructionID.CHR: {
-                const code = this.readVal(args[1]).val;
+                const code = this.readVal(args[1]).val as number;
                 this.save(args[0], VariableValue.single(kStringType, String.fromCharCode(code)));
                 break;
             }
@@ -860,8 +920,8 @@ export class Execution {
                 break;
             }
             case InstructionID.COLOR: {
-                const fc = Math.trunc(this.readVal(args[0]).val);
-                const bc = Math.trunc(this.readVal(args[1]).val);
+                const fc = Math.trunc(this.readVal(args[0]).numVal());
+                const bc = Math.trunc(this.readVal(args[1]).numVal());
                 if (fc >= 0) {
                     this.vpc.setForeColor(fc);
                 }
@@ -874,8 +934,8 @@ export class Execution {
                 if (args.length < 2) {
                     this.vpc.resetPalette();
                 } else {
-                    const attr = Math.trunc(this.readVal(args[0]).val);
-                    const color = Math.trunc(this.readVal(args[1]).val);
+                    const attr = Math.trunc(this.readVal(args[0]).numVal());
+                    const color = Math.trunc(this.readVal(args[1]).numVal());
                     this.vpc.setPaletteAttribute(attr, color);
                 }
                 break;
@@ -886,13 +946,13 @@ export class Execution {
                 break;
             }
             case InstructionID.LINE: {
-                const x1 = this.readVal(args[0]).val;
-                const y1 = this.readVal(args[1]).val;
-                const x2 = this.readVal(args[2]).val;
-                const y2 = this.readVal(args[3]).val;
+                const x1 = this.readVal(args[0]).numVal();
+                const y1 = this.readVal(args[1]).numVal();
+                const x2 = this.readVal(args[2]).numVal();
+                const y2 = this.readVal(args[3]).numVal();
                 let color: number | undefined;
                 if (args[4] !== null) {
-                    color = this.readVal(args[4]).val;
+                    color = this.readVal(args[4]).numVal();
                     color = Math.trunc(color as number);
                 }
                 this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), color);
@@ -901,11 +961,11 @@ export class Execution {
                 break;
             }
             case InstructionID.PSET: {
-                const x = this.readVal(args[0]).val;
-                const y = this.readVal(args[1]).val;
+                const x = this.readVal(args[0]).numVal();
+                const y = this.readVal(args[1]).numVal();
                 let color: number | undefined;
                 if (args[2] !== null) {
-                    color = this.readVal(args[2]).val;
+                    color = this.readVal(args[2]).numVal();
                     color = Math.trunc(color as number);
                 }
                 this.vpc.pset(Math.trunc(x), Math.trunc(y), color);
@@ -918,12 +978,12 @@ export class Execution {
                 break;
             }
             case InstructionID.SCREEN: {
-                const id = this.readVal(args[0]).val;
+                const id = this.readVal(args[0]).numVal();
                 this.vpc.screen(Math.trunc(id));
                 break;
             }
             case InstructionID.SLEEP: {
-                const delay = this.readVal(args[0]).val;
+                const delay = this.readVal(args[0]).numVal();
                 this.waiting = true;
                 this.vpc.sleep(delay, () => {
                     this.waiting = false;
@@ -936,7 +996,7 @@ export class Execution {
                 break;
             }
             case InstructionID.VAL: {
-                this.save(args[0], VariableValue.newDouble(parseFloat(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newDouble(parseFloat(this.readVal(args[1]).strVal())));
                 break;
             }
             case InstructionID.STR: {
@@ -944,47 +1004,47 @@ export class Execution {
                 break;
             }
             case InstructionID.TAN: {
-                this.save(args[0], VariableValue.newDouble(Math.tan(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newDouble(Math.tan(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.SIN: {
-                this.save(args[0], VariableValue.newDouble(Math.sin(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newDouble(Math.sin(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.COS: {
-                this.save(args[0], VariableValue.newDouble(Math.cos(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newDouble(Math.cos(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.ATN: {
-                this.save(args[0], VariableValue.newDouble(Math.atan(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.newDouble(Math.atan(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.CINT: {
-                this.save(args[0], VariableValue.newInt(Math.round(toInt(this.readVal(args[1]).val))));
+                this.save(args[0], VariableValue.newInt(Math.round(toInt(this.readVal(args[1]).numVal()))));
                 break;
             }
             case InstructionID.CLNG: {
-                this.save(args[0], VariableValue.newLong(Math.round(toLong(this.readVal(args[1]).val))));
+                this.save(args[0], VariableValue.newLong(Math.round(toLong(this.readVal(args[1]).numVal()))));
                 break;
             }
             case InstructionID.CDBL: {
-                this.save(args[0], VariableValue.newDouble(this.readVal(args[1]).val));
+                this.save(args[0], VariableValue.newDouble(this.readVal(args[1]).numVal()));
                 break;
             }
             case InstructionID.CSNG: {
-                this.save(args[0], VariableValue.single(kSingleType, this.readVal(args[1]).val));
+                this.save(args[0], VariableValue.single(kSingleType, this.readVal(args[1]).numVal()));
                 break;
             }
             case InstructionID.EXP: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.exp(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.exp(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.FIX: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.trunc(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.trunc(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.INT: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.floor(this.readVal(args[1]).val)));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.floor(this.readVal(args[1]).numVal())));
                 break;
             }
             case InstructionID.END: {

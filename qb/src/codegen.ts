@@ -279,6 +279,18 @@ export class CodegenCtx implements ICtx {
         this.error("index of this kind not implemented");
         return kNullVal;
     }
+    indexField(v: Val, idx: Token): Val | undefined {
+        if (!v.isVar() && !v.isField()) {
+            this.error("syntax error");
+            return undefined;
+        }
+        const field = v.type.lookupField(idx.text);
+        if (!field) {
+            this.error("invalid field");
+            return undefined;
+        }
+        return Val.newField(field.name, field.type, v);
+    }
     dim(name: Token, size: number[], ty?: Type) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
@@ -292,7 +304,7 @@ export class CodegenCtx implements ICtx {
         }
         const v = Val.newVar(name.text, ty ? ty : kIntType, size);
         this.dimVars.set(name.text, v);
-        const vv = new vm.VariableValue(v.type);
+        const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
         vv.dims = size;
         this.write(vm.InstructionID.DECLARE_VAR, name.text, vv);
     }
@@ -889,13 +901,22 @@ export class CodegenCtx implements ICtx {
     }
     private assign(variable: Val, stackPos: number) {
         let index: number[] | undefined;
-        if (variable.index) {
-            index = variable.index.map((i) => this.stackify(i).stackOffset);
+        let fieldIndex: number[] | undefined;
+        let baseVar = variable;
+        if (variable.isField()) {
+            fieldIndex = [];
+            const result = this.fieldToVarAndIndex(variable, fieldIndex);
+            if (!result) return;
+            baseVar = result;
         }
-        if (variable.argIndex !== undefined) {
-            this.write(vm.InstructionID.ASSIGN_ARG, variable.argIndex, stackPos, index);
+        if (baseVar.index) {
+            index = baseVar.index.map((i) => this.stackify(i).stackOffset);
+        }
+
+        if (baseVar.argIndex !== undefined) {
+            this.write(vm.InstructionID.ASSIGN_ARG, baseVar.argIndex, stackPos, index, fieldIndex);
         } else {
-            this.write(vm.InstructionID.ASSIGN_VAR, this.varAddr(variable), stackPos, index);
+            this.write(vm.InstructionID.ASSIGN_VAR, this.varAddr(baseVar), stackPos, index, fieldIndex);
         }
     }
     private constNumber(n: number, ty: Type): Val {
@@ -930,16 +951,41 @@ export class CodegenCtx implements ICtx {
     private newStackValue(ty: Type): Val {
         return Val.newStackValue(ty, this.nextStackOffset());
     }
-    private loadVar(stackIndex: number, variable: Val) {
+    private fieldToVarAndIndex(field: Val, fieldIndex: number[]): Val | undefined {
+        let base = field.fieldBase;
+        if (!base) return undefined;
+        const idx = base.type.lookupFieldOffset(field.varName);
+        if (idx === undefined) return undefined;
+        if (base.isField()) {
+            const result = this.fieldToVarAndIndex(base, fieldIndex);
+            if (!result) return undefined;
+            base = result;
+        } else if (!base.isVar()) {
+            this.error("internal error");
+            return undefined;
+        }
+        fieldIndex.push(idx);
+        return base;
+    }
+    private loadVar(stackIndex: number, variable: Val): Val | undefined {
         let index: number[] | undefined;
-        if (variable.index) {
-            index = variable.index.map((i) => this.stackify(i).stackOffset);
+        let fieldIndex: number[] | undefined;
+        let baseVar = variable;
+        if (variable.isField()) {
+            fieldIndex = [];
+            const result = this.fieldToVarAndIndex(variable, fieldIndex);
+            if (!result) return;
+            baseVar = result;
         }
-        if (variable.argIndex !== undefined) {
-            this.write(vm.InstructionID.LOAD_ARGVAL, stackIndex, variable.argIndex, index);
+        if (baseVar.index) {
+            index = baseVar.index.map((i) => this.stackify(i).stackOffset);
+        }
+        if (baseVar.argIndex !== undefined) {
+            this.write(vm.InstructionID.LOAD_ARGVAL, stackIndex, baseVar.argIndex, index, fieldIndex);
         } else {
-            this.write(vm.InstructionID.LOAD_VARVAL, stackIndex, this.varAddr(variable), index);
+            this.write(vm.InstructionID.LOAD_VARVAL, stackIndex, this.varAddr(baseVar), index, fieldIndex);
         }
+        return Val.newStackValue(variable.type, stackIndex);
     }
     // Convert v to a value that is on the stack.
     private stackify(v?: Val): Val {
@@ -957,10 +1003,8 @@ export class CodegenCtx implements ICtx {
             this.g.constantVals.set(key, r);
             return r;
         }
-        if (v.isVar()) {
-            const r = this.newStackValue(v.type);
-            this.loadVar(r.stackOffset, v);
-            return r;
+        if (v.isVar() || v.isField()) {
+            return this.loadVar(this.nextStackOffset(), v) || kNullVal;
         }
         this.error("invalid value");
         return kNullVal;
@@ -994,9 +1038,9 @@ export class CodegenCtx implements ICtx {
         exe.run();
         const result = exe.stack[0] as vm.VariableValue;
         if (lhs.type === kStringType) {
-            return Val.newStringLiteral(result.val);
+            return Val.newStringLiteral(result.strVal());
         } else {
-            return Val.newNumberLiteral(result.val, lhs.type);
+            return Val.newNumberLiteral(result.numVal(), lhs.type);
         }
     }
     // Write an instruction to the program. Because many instructions take stack indices as arguments,

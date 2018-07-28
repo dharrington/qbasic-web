@@ -32,6 +32,7 @@ export enum ValKind {
     kNone,
     kLiteral,
     kVar,
+    kField,
     kConst,
     kStackValue,
     kCommaDelim,
@@ -47,6 +48,14 @@ export class Val {
         v.kind = ValKind.kVar;
         if (size) v.size = size;
         v.varName = name;
+        return v;
+    }
+    static newField(name: string, ty: Type, base: Val): Val {
+        const v = new Val();
+        v.type = ty;
+        v.kind = ValKind.kField;
+        v.varName = name;
+        v.fieldBase = base;
         return v;
     }
     static newConst(name: string, ty: Type, val: number | string): Val {
@@ -94,6 +103,7 @@ export class Val {
     public size: number[];
     public isArrayArg: boolean;
     public index: Val[]; // in expression X$(3,4)
+    public fieldBase: Val; // in expression X.field, this is X
     public numberValue: number;
     public stringValue: string;
     public varName: string;
@@ -104,19 +114,21 @@ export class Val {
         const v = new Val();
         v.kind = this.kind;
         v.type = this.type;
-        v.size = this.size;
-        v.isArrayArg = this.isArrayArg;
-        v.index = this.index;
-        v.numberValue = this.numberValue;
-        v.stringValue = this.stringValue;
-        v.varName = this.varName;
-        v.stackOffset = this.stackOffset;
-        v.argIndex = this.argIndex;
+        if (this.size) v.size = this.size;
+        if (this.isArrayArg) v.isArrayArg = this.isArrayArg;
+        if (this.index) v.index = this.index;
+        if (this.fieldBase) v.fieldBase = this.fieldBase;
+        if (this.numberValue) v.numberValue = this.numberValue;
+        if (this.stringValue) v.stringValue = this.stringValue;
+        if (this.varName) v.varName = this.varName;
+        if (this.stackOffset) v.stackOffset = this.stackOffset;
+        if (this.argIndex) v.argIndex = this.argIndex;
         return v;
     }
     isCommaDelim(): boolean { return this.kind === ValKind.kCommaDelim; }
     isSemicolonDelim(): boolean { return this.kind === ValKind.kSemicolonDelim; }
     isVar(): boolean { return this.kind === ValKind.kVar; }
+    isField(): boolean { return this.kind === ValKind.kField; }
     isConst(): boolean { return this.kind === ValKind.kConst; }
     isLiteral(): boolean { return this.kind === ValKind.kLiteral; }
     isStackValue(): boolean { return this.kind === ValKind.kStackValue; }
@@ -155,6 +167,8 @@ export interface ICtx {
     variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
     index(v: Val, idx: Val[]): Val;
+    // x.field
+    indexField(v: Val, idx: Token): Val | undefined;
     dim(name: Token, size?: number[], ty?: Type);
     op(name: string, operands: Val[]): Val;
     sub(id: Token, args: Val[]): ICtx;
@@ -240,6 +254,9 @@ export class NullCtx implements ICtx {
     declConst(id: Token, ty: BaseType, value: Val) { }
     index(v: Val, idx: Val[]): Val {
         return v;
+    }
+    indexField(v: Val, idx: Token): Val | undefined {
+        return undefined;
     }
     dim(name: Token, size?: number[], ty?: Type) {
         if (this.dimVars.has(name.text)) {
@@ -421,20 +438,21 @@ class Parser {
         return this.ctx.typename(id);
     }
 
-    type(): boolean { // TYPE ... END TYPE
-        if (!this.nextIf("TYPE")) return false;
+    typeStmt() { // TYPE ... END TYPE
+        this.expectIdent("TYPE");
         const r = new Val();
         const typeId = this.expectIdent();
         if (!typeId) return false;
         const userType = new Type();
         userType.type = BaseType.kUserType;
+        userType.fields = [];
         while (!this.isEof()) {
             this.eatNewlines();
             if (this.nextIf("END")) {
                 if (this.expectIdent("TYPE")) {
                     this.ctx.defineType(typeId, userType);
                 }
-                return true;
+                return;
             }
             const id = this.expectIdent();
             if (id) {
@@ -447,7 +465,6 @@ class Parser {
                 }
             }
         }
-        return true;
     }
 
     label(): boolean { // LabelName:
@@ -585,7 +602,7 @@ class Parser {
 
     maybeVarname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
         if (this.tok().id !== TokenType.kIdent) return undefined;
-        return this.varname();
+        return this.varname(allowIndex);
     }
 
     varname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
@@ -594,8 +611,14 @@ class Parser {
         const sig = this.maybeSigil();
         const defaultType: Type = Type.basic(sig) || this.defaultVarTypes.get(id.text[0]) || kSingleType;
         let v = this.ctx.variable(id, sig, defaultType);
-        if (v && allowIndex && this.tok().isOp("(")) {
+        if (!allowIndex) return v;
+        if (v && this.tok().isOp("(")) {
             v = this.ctx.index(v, this.arrayIndex());
+        }
+        while (v && this.nextIf(".")) {
+            const field = this.expectIdent();
+            if (!field) return undefined;
+            v = this.ctx.indexField(v, field);
         }
         return v;
     }
@@ -1437,6 +1460,7 @@ class Parser {
                     case "PAINT": this.paint(); break;
                     case "PSET": this.pset(); break;
                     case "DO": this.doloop(); break;
+                    case "TYPE": this.typeStmt(); break;
                     case "LOOP": this.loop(); break;
                     case "WHILE": this.whileStmt(); break;
                     case "WEND": this.wendStmt(); break;

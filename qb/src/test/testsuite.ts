@@ -73,11 +73,13 @@ function runSuccess(program: string, expectOutput: string) {
     exe.run(stepQuota);
     pc.textOutput = pc.textOutput.trimRight();
     let failed = false;
-    if (!exe.done) {
+    if (exe.exception) {
+        console.log(`Program had exception: ${exe.exception}.`);
+        failed = true;
+    } else if (!exe.done) {
         console.log(`Program not complete, is there an infinite loop?`);
         failed = true;
-    }
-    if (!failed && expectOutput !== pc.textOutput) {
+    } else if (expectOutput !== pc.textOutput) {
         console.log(`Program complete with incorrect output`);
         failed = true;
     }
