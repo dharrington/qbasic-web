@@ -98,8 +98,10 @@ export enum InstructionID {
     TO_DOUBLE, // S S
     BRANCH_IFNOT, // PC S
     BRANCH, // PC
-    CALL_SUB, // PC string[]
+    CALL_SUB, // stack-size PC string[]
+    CALL_FUNCTION, // stack-size S PC string[]
     EXIT_SUB, // <no parameters>
+    SET_RETURN, // S
     ADD, // S S S
     SUB, // S S S
     NEG, // S S S
@@ -467,6 +469,7 @@ class Frame {
     // Subroutine arguments are passed by reference. That's accomplished by mapping the argument index
     // onto the calling code's variable name.
     public foreignArgNames: string[];
+    public returnStackPos?: number;
 
     readVar(name: string, index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange {
         const v = this.vars.get(name);
@@ -557,15 +560,6 @@ export class Execution {
         }
         this.stack[this.stackIndex(addr)] = val;
     }
-    pop(): any {
-        return this.stack.pop();
-    }
-    popVal(): VariableValue {
-        return this.pop();
-    }
-    push(v: any) {
-        this.stack.push(v);
-    }
     run(maxSteps = 100000) {
         this.inRun = true;
         // Run at most this many operations, so that we don't freeze the UI entirely.
@@ -603,6 +597,7 @@ export class Execution {
             console.error("called step while in wait");
         }
         const inst = this.prog.inst[this.frame.pc];
+        // console.log(inst.toString(this.prog));
         const args = inst.args;
         this.frame.pc++;
         switch (inst.id) {
@@ -857,13 +852,29 @@ export class Execution {
             case InstructionID.CALL_SUB: {
                 const f = new Frame();
                 f.parent = this.frame;
-                f.foreignArgNames = args[1] as string[];
-                f.pc = args[0] as number;
+                f.stackOffset = this.frame.stackOffset + args[0] as number;
+                f.foreignArgNames = args[2] as string[];
+                f.pc = args[1] as number;
+                this.frame = f;
+                break;
+            }
+            case InstructionID.CALL_FUNCTION: {
+                const f = new Frame();
+                f.parent = this.frame;
+                f.stackOffset = this.frame.stackOffset + args[0] as number;
+                f.returnStackPos = args[1] as number;
+                f.foreignArgNames = args[3] as string[];
+                f.pc = args[2] as number;
                 this.frame = f;
                 break;
             }
             case InstructionID.EXIT_SUB: {
                 this.frame = this.frame.parent as Frame;
+                break;
+            }
+            case InstructionID.SET_RETURN: {
+                const f = this.frame.parent as Frame;
+                this.stack[this.frame.returnStackPos as number] = this.readVal(args[0]).copySingle();
                 break;
             }
             case InstructionID.ABS: {

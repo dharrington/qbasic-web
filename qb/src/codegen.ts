@@ -43,7 +43,6 @@ class GotoInfo {
 }
 
 class SubroutineInfo {
-    public exits: vm.Instruction[] = [];
     public calls: vm.Instruction[] = [];
     constructor(public name: string, public args: Val[], public startPc: number) {
     }
@@ -57,7 +56,10 @@ class FunctionInfo {
         if (op) f.builtinOp = op;
         return f;
     }
-    public builtinOp: vm.InstructionID;
+    public name: string;
+    public calls: vm.Instruction[] = [];
+    public startPc?: number;
+    public builtinOp?: vm.InstructionID;
     constructor(public type: FunctionType, public builtin: boolean) { }
 }
 
@@ -159,6 +161,7 @@ export class CodegenCtx implements ICtx {
     private constVars: Map<string, Val> = new Map<string, Val>();
     private parent?: CodegenCtx;
     private subInfo?: SubroutineInfo;
+    private fnInfo?: FunctionInfo;
     private stackOffset: number = 0;
     private ctrlFlowStack: CtrlFlow[] = [];
     private tempVarCount = 0;
@@ -212,35 +215,43 @@ export class CodegenCtx implements ICtx {
         this.stackOffset = 0;
     }
     // Returns a Val that represents a named variable.
-    variable(varName: Token, sigil: BaseType, defaultType: Type): Val {
+    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val {
         // If a variable is defined by DIM or CONST, only a single variable can use that name.
         // Otherwise, an 'auto' variable of each basic type can be used with the same name (X%, X$, etc...)
+        let name = "";
+        let location: Location | undefined;
+        if (varName instanceof Token) {
+            name = varName.text;
+            location = varName.loc;
+        } else {
+            name = varName as string;
+        }
         {
-            const dimVar = this.dimVars.get(varName.text);
+            const dimVar = this.dimVars.get(name);
             if (dimVar) {
                 if (sigil === BaseType.kNone || dimVar.baseType() === sigil) {
                     return dimVar;
                 } else {
-                    this.error("duplicate definition", varName.loc);
+                    this.error("duplicate definition", location);
                     return kNullVal;
                 }
             }
         }
         {
-            const constVar = this.constVars.get(varName.text);
+            const constVar = this.constVars.get(name);
             if (constVar) {
                 if (sigil === BaseType.kNone || constVar.baseType() === sigil) {
                     return constVar;
                 } else {
-                    this.error("duplicate definition", varName.loc);
+                    this.error("duplicate definition", location);
                     return kNullVal;
                 }
             }
         }
-        const key = varName.text + baseTypeToSigil(sigil);
+        const key = name + baseTypeToSigil(sigil);
         const autoVar = this.autoVars.get(key);
         if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, defaultType);
+        const v = Val.newVar(name, defaultType);
         this.autoVars.set(key, v);
 
         // Write declaration instruction.
@@ -291,7 +302,7 @@ export class CodegenCtx implements ICtx {
         }
         return Val.newField(field.name, field.type, v);
     }
-    dim(name: Token, size: number[], ty?: Type) {
+    dim(name: Token, size?: number[], ty?: Type) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -523,6 +534,12 @@ export class CodegenCtx implements ICtx {
     declSub(id: Token, args: Val[]) {
         this.g.subs.set(id.text, new SubroutineInfo(id.text, args, -1));
     }
+    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]) {
+        const argTypes = args.map((a) => a.type);
+        const fn = new FunctionInfo(new FunctionType(type, argTypes), false);
+        fn.name = id.text;
+        this.g.functions.set(fn.name, fn);
+    }
     // At the end of the program lies the END instruction. Below that point, only subroutine code is present.
     // Defining a subroutine will implicitly mark the end of the program.
     setEnd() {
@@ -563,6 +580,56 @@ export class CodegenCtx implements ICtx {
         return subCtx;
     }
 
+    subExit() {
+        if (!this.subInfo) {
+            this.error("EXIT outside of sub");
+            return;
+        }
+        this.write(vm.InstructionID.EXIT_SUB);
+    }
+
+    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx {
+        this.setEnd();
+        let fn = this.g.functions.get(id.text);
+        if (!fn) {
+            this.declFunction(id, sigil, returnType, args);
+            fn = this.g.functions.get(id.text) as FunctionInfo;
+        } else if (fn.startPc !== undefined) {
+            this.error("function already defined");
+            return this;
+        }
+        if (this.parent) {
+            this.error("function must be at the module level");
+            return this;
+        }
+        const fnCtx = new CodegenCtx();
+        for (let i = 0; i < args.length; i++) {
+            const a = args[i];
+            if (a.kind !== ValKind.kArgument) {
+                this.error("internal error");
+                return this;
+            }
+            const argVal = Val.newVar(a.varName, a.type, a.size);
+            argVal.argIndex = i;
+            fnCtx.autoVars.set(this.autoVarKey(argVal), argVal);
+        }
+        fn.startPc = this.program().inst.length;
+        fnCtx.g = this.g;
+        fnCtx.parent = this;
+        fnCtx.fnInfo = fn;
+        fnCtx.dim(id, undefined, returnType);
+        return fnCtx;
+    }
+
+    functionExit() {
+        if (!this.fnInfo) {
+            this.error("EXIT FUNCTION outside of FUNCTION");
+            return;
+        }
+        this.write(vm.InstructionID.SET_RETURN, this.variable(this.fnInfo.name, BaseType.kNone, this.fnInfo.type.resultType));
+        this.write(vm.InstructionID.EXIT_SUB);
+    }
+
     declArg(id: Token, isArray: boolean, ty: Type | null): Val {
         const v = new Val();
         v.type = ty || kIntType;
@@ -571,23 +638,32 @@ export class CodegenCtx implements ICtx {
         v.isArrayArg = isArray;
         return v;
     }
-    endsub() {
+
+    endSub() {
         if (!this.subInfo) {
             this.error("internal error");
             return;
         }
-        for (const e of this.subInfo.exits) {
-            e.args[0] = this.program().inst.length;
+        this.write(vm.InstructionID.EXIT_SUB);
+    }
+    endFunction() {
+        if (!this.fnInfo) {
+            this.error("internal error");
+            return;
         }
+        this.write(vm.InstructionID.SET_RETURN, this.variable(this.fnInfo.name, BaseType.kNone, this.fnInfo.type.resultType));
         this.write(vm.InstructionID.EXIT_SUB);
     }
     isSub(id: string): boolean {
         return this.g.subs.has(id);
     }
+    isFunction(id: string): boolean {
+        return this.g.functions.has(id);
+    }
     lookupFunction(id: string): FunctionType | undefined {
         const f = this.g.functions.get(id);
-        if (f) return f.type;
-        return undefined;
+        if (!f) return undefined;
+        return f.type;
     }
     callSub(id: Token, args: Val[]) {
         const sub = this.g.subs.get(id.text);
@@ -597,7 +673,9 @@ export class CodegenCtx implements ICtx {
         }
         // TODO: check args
         // Parameters are passed by reference. We need to create temporary variables for non-variable parameters.
+        // TODO: This is kind of a hack, think about a better way to pass arguments.
         const argNames: string[] = [];
+        const tempArgs: string[] = [];
         let tempArgCount = 0;
         for (const arg of args) {
             if (!arg) return;
@@ -609,12 +687,18 @@ export class CodegenCtx implements ICtx {
                 const varAddr = this.varAddr(newVar);
                 this.assign(newVar, this.stackify(arg).stackOffset);
                 argNames.push(varAddr);
+                tempArgs.push(varAddr);
                 tempArgCount++;
             }
         }
-        sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, argNames));
+        // The VM doesn't know how much stack is actually in-use, so we have to tell it when calling a function.
+        sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, this.stackOffset, 0/*pc*/, argNames));
+        for (const a of tempArgs) {
+            this.autoVars.delete(a);
+        }
         this.tempVarCount -= tempArgCount;
     }
+
     callFunction(id: string, args: Val[]): Val {
         const f = this.g.functions.get(id);
         if (!f) return kNullVal;
@@ -623,13 +707,47 @@ export class CodegenCtx implements ICtx {
             this.write(f.builtinOp, r, ...args);
             return r;
         }
-        switch (id) {
-            case "FRE": {
-                return this.constNumber(47724, kLongType); // free memory: just fake it!
+        if (f.builtin) {
+            switch (id) {
+                case "FRE": {
+                    return this.constNumber(47724, kLongType); // free memory: just fake it!
+                }
+            }
+            this.error("not implemented");
+            return kNullVal;
+        }
+
+        // TODO: check args
+        // Parameters are passed by reference. We need to create temporary variables for non-variable parameters.
+        const argNames: string[] = [];
+        const tempArgs: string[] = [];
+        let tempArgCount = 0;
+
+        // make the return variable
+        const returnVal = this.newStackValue(f.type.resultType);
+
+        for (const arg of args) {
+            if (!arg) return kNullVal;
+            if (arg.isVar()) {
+                argNames.push(this.varAddr(arg));
+            } else {
+                const v = new Val();
+                const newVar = Val.newVar("__t" + this.tempVarCount++, arg.type, arg.size);
+                const varAddr = this.varAddr(newVar);
+                this.assign(newVar, this.stackify(arg).stackOffset);
+                argNames.push(varAddr);
+                tempArgs.push(varAddr);
+                tempArgCount++;
             }
         }
-        this.error("not implemented");
-        return kNullVal;
+
+        f.calls.push(this.emit(vm.InstructionID.CALL_FUNCTION, this.stackOffset, returnVal.stackOffset, 0/*pc*/, argNames));
+
+        for (const a of tempArgs) {
+            this.autoVars.delete(a);
+        }
+        this.tempVarCount -= tempArgCount;
+        return returnVal;
     }
 
     input(keepCursor: boolean, prompt: string, args: Val[]) {
@@ -880,7 +998,12 @@ export class CodegenCtx implements ICtx {
     finalize() {
         for (const [name, sub] of this.g.subs) {
             for (const call of sub.calls) {
-                call.args[0] = sub.startPc;
+                call.args[1] = sub.startPc;
+            }
+        }
+        for (const [name, fn] of this.g.functions) {
+            for (const call of fn.calls) {
+                call.args[2] = fn.startPc;
             }
         }
         for (const g of this.g.gotos) {

@@ -33,11 +33,7 @@ function testProgram(programPath: string) {
     if (parts.length === 2) {
         [programText, desiredOutput] = parts;
     }
-    if (desiredOutput !== undefined) {
-        runSuccess(programText, desiredOutput);
-    } else {
-        compileSuccess(programText);
-    }
+    runSuccess(programText, desiredOutput);
 }
 function testCases(caseDir = process.argv[2]) {
     for (const f of fs.readdirSync(caseDir)) {
@@ -53,10 +49,9 @@ function testCases(caseDir = process.argv[2]) {
 function visualizeWhitespace(output: string): string {
     return output.replace(/ /g, String.fromCharCode(183));
 }
-function runSuccess(program: string, expectOutput: string) {
+function runSuccess(program: string, expectOutput: string | undefined) {
     const stepQuota = 1000;
 
-    expectOutput = expectOutput.trimRight();
     const tokens = lex(program);
     const ctx = new codegen.CodegenCtx();
     parse(ctx, tokens);
@@ -79,7 +74,7 @@ function runSuccess(program: string, expectOutput: string) {
     } else if (!exe.done) {
         console.log(`Program not complete, is there an infinite loop?`);
         failed = true;
-    } else if (expectOutput !== pc.textOutput) {
+    } else if (expectOutput !== undefined && expectOutput.trimRight() !== pc.textOutput) {
         console.log(`Program complete with incorrect output`);
         failed = true;
     }
@@ -95,28 +90,17 @@ Got:
 -------------------------------------------------------------------------------
 ${visualizeWhitespace(pc.textOutput)}
 -------------------------------------------------------------------------------
-Want:
+`);
+    if (expectOutput !== undefined) {
+        console.log(`Want:
 -------------------------------------------------------------------------------
 ${visualizeWhitespace(expectOutput)}
 -------------------------------------------------------------------------------
-Program code:
+`);
+    }
+    console.log(`Program code:
 ${ctx.program().toString()}`);
     passCount++;
-}
-
-function compileSuccess(program: string) {
-    const tokens = lex(program);
-    const ctx = new codegen.CodegenCtx();
-    parse(ctx, tokens);
-    const pc = new DebugPC();
-    if (ctx.errors.length > 0) {
-        console.log(`Compile errors in program:\n${program}\n----\n`);
-        for (const e of ctx.errors()) {
-            console.log(`  ${e}`);
-        }
-        failCount++;
-        return;
-    }
 }
 
 testCases();

@@ -172,9 +172,14 @@ export interface ICtx {
     dim(name: Token, size?: number[], ty?: Type);
     op(name: string, operands: Val[]): Val;
     sub(id: Token, args: Val[]): ICtx;
+    subExit();
+    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx;
+    functionExit();
     declArg(id: Token, isArray: boolean, ty: Type | null): Val;
-    endsub();
+    endSub();
+    endFunction();
     declSub(id: Token, args: Val[]);
+    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]);
     isSub(id: string): boolean;
     lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]);
@@ -280,14 +285,18 @@ export class NullCtx implements ICtx {
     sub(id: Token): ICtx {
         return this;
     }
+    subExit() { }
+    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx {
+        return this;
+    }
+    functionExit() { }
     declArg(id: Token, isArray: boolean, ty: Type | null): Val {
         return kNullVal;
     }
-    endsub() {
-
-    }
-    declSub(id: Token, args: Val[]) {
-    }
+    endSub() { }
+    endFunction() { }
+    declSub(id: Token, args: Val[]) { }
+    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]) { }
     isSub(id: string): boolean {
         return this.subs.has(id);
     }
@@ -343,6 +352,9 @@ class Parser {
     // DEFINT etc... map from first letter to base type.
     private defaultVarTypes = new Map<string, Type>();
     constructor(private ctx: ICtx, private tokens: Token[]) {
+    }
+    defaultType(varName: string, sigil?: BaseType): Type {
+        return Type.basic(sigil) || this.defaultVarTypes.get(varName[0]) || kSingleType;
     }
     currentBlock(): Block | undefined {
         return this.openBlocks.length ? this.openBlocks[this.openBlocks.length - 1] : undefined;
@@ -493,19 +505,24 @@ class Parser {
         return this.ctx.op("ABS", args);
     }
     maybeFunctionCall(): Val | undefined {
-        let id: string;
+        if (!this.tok(0).isIdent()) return undefined;
+        const id = this.tok(0).text;
         let tokenCount: number;
-        if (this.tok(0).isIdent() && this.tok(1).isSigil()) {
-            id = this.tok(0).text + this.tok(1).text;
+        let sigil: BaseType | undefined;
+        if (this.tok(1).isSigil()) {
+            sigil = sigilToBaseType(this.tok(1).text);
             tokenCount = 2;
-        } else if (this.tok(0).isIdent()) {
-            id = this.tok(0).text;
-            tokenCount = 1;
         } else {
-            return undefined;
+            tokenCount = 1;
         }
         const func = this.ctx.lookupFunction(id);
         if (!func) return undefined;
+        if (sigil) {
+            if (Type.basic(sigil) !== func.resultType) {
+                this.error("duplicate definition");
+                return undefined;
+            }
+        }
         this.next(tokenCount);
         const args = this.callArgsWithTypes(func.argTypes, func.argTypes.length - func.optionalParameters);
         if (!args) {
@@ -609,8 +626,7 @@ class Parser {
         const id = this.expectIdent();
         if (!id) return undefined;
         const sig = this.maybeSigil();
-        const defaultType: Type = Type.basic(sig) || this.defaultVarTypes.get(id.text[0]) || kSingleType;
-        let v = this.ctx.variable(id, sig, defaultType);
+        let v = this.ctx.variable(id, sig, this.defaultType(id.text, sig));
         if (!allowIndex) return v;
         if (v && this.tok().isOp("(")) {
             v = this.ctx.index(v, this.arrayIndex());
@@ -637,7 +653,22 @@ class Parser {
         this.expectOp(")");
         return [];
     }
-
+    sizeOrRange(): Val[] | undefined {
+        const i = this.maybeNumberLiteral();
+        if (!i) { // TODO: CONST
+            this.error("expected number");
+            return undefined;
+        }
+        if (this.nextIf("TO")) {
+            const to = this.maybeNumberLiteral();
+            if (!to) {
+                this.error("expected number");
+                return undefined;
+            }
+            return [i, to];
+        }
+        return [i];
+    }
     maybeArraySize(): number[] | undefined {
         if (!this.nextIf("(")) return undefined;
         const i = this.maybeNumberLiteral();
@@ -651,6 +682,7 @@ class Parser {
                 this.error("expected number");
                 return undefined;
             }
+            // TODO: Handle multi-dimension array
             this.expectOp(")");
             return [i.numberValue, to.numberValue];
         }
@@ -658,8 +690,9 @@ class Parser {
         return [i.numberValue];
     }
 
-    dim() { // DIM <ident> [AS <type>]
+    dimStmt() { // DIM [SHARED] <ident> [AS <type>]
         this.expectIdent("DIM");
+        const shared = this.nextIf("SHARED");
         let id = this.expectIdent();
         if (!id) return;
         let size = this.maybeArraySize();
@@ -757,7 +790,7 @@ class Parser {
         }
         return v;
     }
-    print() {
+    printStmt() {
         if (this.nextIf("PRINT")) { } else this.expectOp("?");
         const vals: Val[] = [];
         while (!this.isEol()) {
@@ -782,7 +815,7 @@ class Parser {
         this.ctx.op("PRINT", vals);
     }
 
-    locate() {
+    locateStmt() {
         this.expectIdent("LOCATE");
         let x: Val | undefined;
         let y: Val | undefined;
@@ -799,7 +832,7 @@ class Parser {
         this.ctx.locate(x, y);
     }
 
-    let(): boolean {
+    letStmt(): boolean {
         this.nextIf("LET");
         const v = this.maybeVarname(true);
         if (!v) return false;
@@ -811,7 +844,7 @@ class Parser {
         return true;
     }
 
-    cls() {
+    clsStmt() {
         this.expectIdent("CLS");
         this.ctx.op("CLS", []);
     }
@@ -851,7 +884,7 @@ class Parser {
         return args;
     }
 
-    ifstmt(moduleLevel: boolean, allowHardNewline: boolean) {
+    ifStmt(moduleLevel: boolean, allowHardNewline: boolean) {
         // TODO: IF <numeric-expr> GOTO line
         this.expectIdent("IF");
         const nesting = ++this.controlNesting; // TODO: probably not necessary
@@ -935,7 +968,7 @@ class Parser {
         }
         --this.controlNesting;
     }
-    screenstmt() {
+    screenStmt() {
         this.expectIdent("SCREEN");
         const id = this.numericExpr();
         if (id) this.ctx.screen(id);
@@ -994,7 +1027,7 @@ class Parser {
             this.defaultVarTypes.set(c, ty);
         }
     }
-    color() { // COLOR [<fore>][, <back>]
+    colorStmt() { // COLOR [<fore>][, <back>]
         this.expectIdent("COLOR");
         let fore: Val | undefined;
         let back: Val | undefined;
@@ -1010,7 +1043,7 @@ class Parser {
         }
         this.ctx.color(fore, back);
     }
-    palette() { // PALETTE [attr, color]
+    paletteStmt() { // PALETTE [attr, color]
         this.expectIdent("PALETTE");
         if (this.tok().isNewlineOrColon()) {
             this.ctx.palette();
@@ -1020,8 +1053,8 @@ class Parser {
         this.expectOp(",");
         this.ctx.palette(attr, this.numericExpr());
     }
-    sub(): boolean { // SUB <name> [(<args>)] ... END SUB
-        const begin = this.nextIf("SUB");
+    subStmt() { // SUB <name> [(<args>)] ... END SUB
+        const begin = this.expectIdent("SUB");
         if (!begin) { return false; }
         this.isEnd = true;
         const id = this.expectIdent();
@@ -1039,19 +1072,53 @@ class Parser {
             }
             this.statementAndNewline(false);
         }
-        this.ctx.endsub();
+        this.ctx.endSub();
+        this.ctx = moduleCtx;
+        return true;
+    }
+    functionStmt() {
+        const begin = this.expectIdent("FUNCTION");
+        if (!begin) { return false; }
+        this.isEnd = true;
+        const id = this.expectIdent();
+        if (!id) { return true; }
+        const moduleCtx = this.ctx;
+        const sig = this.maybeSigil();
+        const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs());
+        this.ctx = subCtx;
+        this.expectNewline();
+        while (!this.isEof()) {
+            this.eatNewlines();
+            if (this.tok().isIdent("END") && this.tok(1).isIdent("FUNCTION")) {
+                this.next(2);
+                break;
+            }
+            this.statementAndNewline(false);
+        }
+        this.ctx.endFunction();
         this.ctx = moduleCtx;
         return true;
     }
 
-    declare(): boolean { // DECLARE SUB <name> (<args>)
-        if (!this.nextIf("DECLARE")) { return false; }
-        if (!this.expectIdent("SUB")) { this.eatUntilNewline(); return true; }
-        const id = this.expectIdent();
-        if (!id) { this.eatUntilNewline(); return true; }
-        this.ctx.declSub(id, this.declArgs());
-        return true;
+    declareStmt() { // DECLARE SUB <name> (<args>)
+        this.expectIdent("DECLARE");
+        if (this.nextIf("SUB")) {
+            const id = this.expectIdent();
+            if (!id) { return; }
+            this.ctx.declSub(id, this.declArgs());
+            return;
+        }
+        if (this.nextIf("FUNCTION")) {
+            const id = this.expectIdent();
+            if (!id) { return; }
+            const sig = this.maybeSigil();
+            this.ctx.declFunction(id, sig, this.defaultType(id.text, sig), this.declArgs());
+            return;
+        }
+        this.error("expected SUB or FUNCTION");
+        return;
     }
+
     callArgsWithTypes(types: Type[], requiredArgsCount: number = -1): Val[] | undefined {
         if (requiredArgsCount === -1) { requiredArgsCount = types.length; }
         const args = this.callArgs(true, requiredArgsCount);
@@ -1167,7 +1234,7 @@ class Parser {
         return true;
     }
 
-    input(): boolean { // INPUT [;] [<prompt> :|,] <variable, list>
+    inputStmt(): boolean { // INPUT [;] [<prompt> :|,] <variable, list>
         this.expectIdent("INPUT");
         let keepCursor = false;
         if (this.tok().isOp(";")) {
@@ -1206,7 +1273,7 @@ class Parser {
         return this.label() || hadLabels;
     }
 
-    goto() {
+    gotoStmt() {
         this.expectIdent("GOTO");
         if (this.tok().isNumber() && /^[0-9]+$/.test(this.tok().text)) {
             this.ctx.gotoLine(parseInt(this.tok().text, 10), this.tok());
@@ -1263,7 +1330,7 @@ class Parser {
         this.openBlocks.push(b);
         return true;
     }
-    doloop() {
+    doStmt() {
         const doTok = this.expectIdent("DO");
         if (!doTok) return;
         let whileCond: Val = kValTrue;
@@ -1279,7 +1346,7 @@ class Parser {
         this.openBlocks.push(new Block(doTok, "DO"));
         this.ctx.doBegin(whileCond);
     }
-    loop() {
+    loopStmt() {
         this.expectIdent("LOOP");
         const block = this.currentBlock();
         if (!block || block.kind !== "DO") {
@@ -1317,7 +1384,7 @@ class Parser {
         this.ctx.wend();
         this.openBlocks.pop();
     }
-    exit() {
+    exitStmt() {
         this.expectIdent("EXIT");
         const block = this.currentBlock();
         if (!block) {
@@ -1327,6 +1394,8 @@ class Parser {
         switch (block.kind) {
             case "FOR": this.expectIdent("FOR"); this.ctx.forExit(); break;
             case "DO": this.expectIdent("DO"); this.ctx.doExit(); break;
+            case "SUB": this.expectIdent("SUB"); this.ctx.subExit(); break;
+            case "FUNCTION": this.expectIdent("FUNCTION"); this.ctx.functionExit(); break;
             default:
                 this.error("expected FOR, DO, or SUB");
                 break;
@@ -1350,7 +1419,7 @@ class Parser {
         this.expectOp(")");
         if (x && y) return new Coord(step, x, y);
     }
-    pset() {
+    psetStmt() {
         this.expectIdent("PSET");
         const a = this.coord();
         if (!a) return;
@@ -1363,7 +1432,7 @@ class Parser {
         }
         this.ctx.pset(a, color);
     }
-    line() {
+    lineStmt() {
         this.expectIdent("LINE");
         const a = this.coord();
         this.expectOp("-");
@@ -1396,15 +1465,15 @@ class Parser {
         }
         this.ctx.line(a, b, color, option, style);
     }
-    circle() {
+    circleStmt() {
         this.expectIdent("CIRCLE"); // TODO
         this.eatUntilNewline();
     }
-    paint() {
+    paintStmt() {
         this.expectIdent("PAINT"); // TODO
         this.eatUntilNewline();
     }
-    sleep() {
+    sleepStmt() {
         this.expectIdent("SLEEP");
         if (!this.isEol()) {
             this.ctx.sleep(this.numericExpr());
@@ -1428,16 +1497,18 @@ class Parser {
         if (this.isEof()) { return false; }
         const hasLabels = this.maybeLabels();
         while (1) {
-            if (moduleLevel && this.declare()) { break; }
-            if (moduleLevel && this.sub()) { break; }
+
+            if (moduleLevel && this.tok().text === "DECLARE") { this.declareStmt(); break; }
+            if (moduleLevel && this.tok().text === "SUB") { this.subStmt(); break; }
+            if (moduleLevel && this.tok().text === "FUNCTION") { this.functionStmt(); break; }
             if (this.isEnd && moduleLevel) {
                 this.error("expected SUB or EOF");
                 return false;
             }
             const handled = ((): boolean => {
                 switch (this.tok().text) {
-                    case "IF": this.ifstmt(moduleLevel, allowHardNewline); break;
-                    case "SCREEN": this.screenstmt(); break;
+                    case "IF": this.ifStmt(moduleLevel, allowHardNewline); break;
+                    case "SCREEN": this.screenStmt(); break;
                     case "DEFINT":
                     case "DEFSTR":
                     case "DEFSNG":
@@ -1445,23 +1516,23 @@ class Parser {
                     case "DEFDBL": this.defABCStmt(); break;
                     case "FOR": this.forStmt(); break;
                     case "NEXT": this.nextStmt(); break;
-                    case "EXIT": this.exit(); break;
-                    case "COLOR": this.color(); break;
-                    case "PRINT": case "?": this.print(); break;
-                    case "LINE": this.line(); break;
-                    case "GOTO": this.goto(); break;
-                    case "LOCATE": this.locate(); break;
-                    case "PALETTE": this.palette(); break;
-                    case "SLEEP": this.sleep(); break;
-                    case "DIM": this.dim(); break;
-                    case "INPUT": this.input(); break;
-                    case "CLS": this.cls(); break;
-                    case "CIRCLE": this.circle(); break;
-                    case "PAINT": this.paint(); break;
-                    case "PSET": this.pset(); break;
-                    case "DO": this.doloop(); break;
+                    case "EXIT": this.exitStmt(); break;
+                    case "COLOR": this.colorStmt(); break;
+                    case "PRINT": case "?": this.printStmt(); break;
+                    case "LINE": this.lineStmt(); break;
+                    case "GOTO": this.gotoStmt(); break;
+                    case "LOCATE": this.locateStmt(); break;
+                    case "PALETTE": this.paletteStmt(); break;
+                    case "SLEEP": this.sleepStmt(); break;
+                    case "DIM": this.dimStmt(); break;
+                    case "INPUT": this.inputStmt(); break;
+                    case "CLS": this.clsStmt(); break;
+                    case "CIRCLE": this.circleStmt(); break;
+                    case "PAINT": this.paintStmt(); break;
+                    case "PSET": this.psetStmt(); break;
+                    case "DO": this.doStmt(); break;
                     case "TYPE": this.typeStmt(); break;
-                    case "LOOP": this.loop(); break;
+                    case "LOOP": this.loopStmt(); break;
                     case "WHILE": this.whileStmt(); break;
                     case "WEND": this.wendStmt(); break;
                     case "CONST": this.constStmt(); break;
@@ -1471,7 +1542,7 @@ class Parser {
             })();
             if (handled) { break; }
             if (this.maybeCallSubStmt()) { break; }
-            if (this.let()) { break; }
+            if (this.letStmt()) { break; }
             // Should only have empty statement when labels are used (since newlines are eaten).
             if (hasLabels) { break; }
             this.error("expected statement");

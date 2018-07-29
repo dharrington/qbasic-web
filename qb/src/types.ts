@@ -55,7 +55,7 @@ export class Type {
         t.type = baseType;
         return t;
     }
-    static basic(baseType: BaseType): Type | undefined {
+    static basic(baseType?: BaseType): Type | undefined {
         switch (baseType) {
             case BaseType.kInt: return kIntType;
             case BaseType.kString: return kStringType;
