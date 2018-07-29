@@ -332,10 +332,10 @@ export class VariableValue {
         // Array values are initialized lazily...
         let offset = 0;
         for (let i = 0; i < index.length; i++) {
-            if (index[i] >= dims[i]) {
+            if (index[i] > dims[i]) {
                 return new IndexOutOfRange();
             }
-            offset *= dims[i];
+            offset *= 1 + dims[i];
             offset += index[i];
         }
         return offset;

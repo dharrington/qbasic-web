@@ -302,7 +302,7 @@ export class CodegenCtx implements ICtx {
         }
         return Val.newField(field.name, field.type, v);
     }
-    dim(name: Token, size?: number[], ty?: Type) {
+    dim(name: Token, size?: Val[][], ty?: Type) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -313,10 +313,25 @@ export class CodegenCtx implements ICtx {
                 return;
             }
         }
-        const v = Val.newVar(name.text, ty ? ty : kIntType, size);
+        let numericSize: number[] | undefined;
+        if (size) {
+            numericSize = [];
+            for (const s of size) {
+                const sAsNumeric: number[] = [];
+                for (const sv of s) {
+                    if ((sv.isLiteral() || sv.isConst()) && sv.type.isNumeric()) {
+                        sAsNumeric.push(sv.numberValue);
+                    } else {
+                        this.error("expected constant numeric value", sv.loc());
+                    }
+                }
+                numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
+            }
+        }
+        const v = Val.newVar(name.text, ty ? ty : kIntType, numericSize);
         this.dimVars.set(name.text, v);
         const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
-        vv.dims = size;
+        vv.dims = numericSize;
         this.write(vm.InstructionID.DECLARE_VAR, name.text, vv);
     }
     binaryOpType(a: Type, b: Type): Type {

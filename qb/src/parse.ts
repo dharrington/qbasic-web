@@ -169,7 +169,7 @@ export interface ICtx {
     index(v: Val, idx: Val[]): Val;
     // x.field
     indexField(v: Val, idx: Token): Val | undefined;
-    dim(name: Token, size?: number[], ty?: Type);
+    dim(name: Token, size?: Val[][], ty?: Type);
     op(name: string, operands: Val[]): Val;
     sub(id: Token, args: Val[]): ICtx;
     subExit();
@@ -263,7 +263,7 @@ export class NullCtx implements ICtx {
     indexField(v: Val, idx: Token): Val | undefined {
         return undefined;
     }
-    dim(name: Token, size?: number[], ty?: Type) {
+    dim(name: Token, size?: Val[][], ty?: Type) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -274,8 +274,8 @@ export class NullCtx implements ICtx {
                 return;
             }
         }
-        const v = Val.newVar(name.text, ty ? ty : kIntType, size);
-        this.dimVars.set(name.text, v);
+        // const v = Val.newVar(name.text, ty ? ty : kIntType, size);
+        // this.dimVars.set(name.text, v);
     }
 
     op(name: string, operands: Val[]): Val {
@@ -643,24 +643,23 @@ class Parser {
         this.expectOp("(");
         const idx: Val[] = [];
         while (!this.isEol()) {
-            if (this.nextIf(")")) {
-                return idx;
-            }
             const v = this.numericExpr();
             if (!v) break;
             idx.push(v);
+            if (this.nextIf(")")) return idx;
+            if (!this.expectOp(",")) return [];
         }
         this.expectOp(")");
         return [];
     }
     sizeOrRange(): Val[] | undefined {
-        const i = this.maybeNumberLiteral();
+        const i = this.numericExpr();
         if (!i) { // TODO: CONST
             this.error("expected number");
             return undefined;
         }
         if (this.nextIf("TO")) {
-            const to = this.maybeNumberLiteral();
+            const to = this.numericExpr();
             if (!to) {
                 this.error("expected number");
                 return undefined;
@@ -669,25 +668,17 @@ class Parser {
         }
         return [i];
     }
-    maybeArraySize(): number[] | undefined {
+    maybeArraySize(): Val[][] | undefined {
         if (!this.nextIf("(")) return undefined;
-        const i = this.maybeNumberLiteral();
-        if (!i) { // TODO: CONST
-            this.error("expected number");
-            return undefined;
+        const result: Val[][] = [];
+        while (1) {
+            const d = this.sizeOrRange();
+            if (!d) return undefined;
+            result.push(d);
+            if (!this.nextIf(",")) break;
         }
-        if (this.nextIf("TO")) {
-            const to = this.maybeNumberLiteral();
-            if (!to) {
-                this.error("expected number");
-                return undefined;
-            }
-            // TODO: Handle multi-dimension array
-            this.expectOp(")");
-            return [i.numberValue, to.numberValue];
-        }
-        this.expectOp(")");
-        return [i.numberValue];
+        if (!this.expectOp(")")) return undefined;
+        return result;
     }
 
     dimStmt() { // DIM [SHARED] <ident> [AS <type>]

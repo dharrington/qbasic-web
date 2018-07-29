@@ -50,7 +50,7 @@ function visualizeWhitespace(output: string): string {
     return output.replace(/ /g, String.fromCharCode(183));
 }
 function runSuccess(program: string, expectOutput: string | undefined) {
-    const stepQuota = 1000;
+    const stepQuota = 10000;
 
     const tokens = lex(program);
     const ctx = new codegen.CodegenCtx();

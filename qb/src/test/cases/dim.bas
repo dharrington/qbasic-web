@@ -1,0 +1,22 @@
+CONST THREE = 3
+CONST FOUR = 4
+DIM XX(THREE,FOUR) AS INTEGER, YY AS STRING
+FOR X = 1 TO 3
+FOR Y = 1 TO 4
+  XX(X,Y)=X*Y
+NEXT Y
+NEXT X
+
+FOR X = 1 TO 3
+  FOR Y = 1 TO 4
+    PRINT XX(X,Y);
+  NEXT Y
+  PRINT
+NEXT X
+YY = "HI"
+PRINT YY
+REM output
+ 1  2  3  4 
+ 2  4  6  8 
+ 3  6  9  12 
+HI
