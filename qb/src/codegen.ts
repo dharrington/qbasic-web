@@ -74,7 +74,7 @@ class GlobalCtx {
     public program: vm.Program = new vm.Program();
     public errors: string[] = [];
     public errorLocations: Location[] = [];
-    public gotos: GotoInfo[] = [];
+    public gotos: GotoInfo[] = []; // goto, gosub, and return
     public currentLine = 0;
     // Has the END instruction been written?
     public isEnd = false;
@@ -120,6 +120,8 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kSingleType, [kDoubleType]), vm.InstructionID.CSNG));
         this.functions.set("EXP",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.EXP));
+        this.functions.set("TIMER",
+            FunctionInfo.builtin(new FunctionType(kDoubleType, []), vm.InstructionID.TIMER));
         this.functions.set("FRE",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
@@ -214,10 +216,34 @@ export class CodegenCtx implements ICtx {
         // reuse the stack offsets after each statement.
         this.stackOffset = 0;
     }
-    // Returns a Val that represents a named variable.
-    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val {
+
+    findVariable(name: string, sigil: BaseType): Val | undefined {
         // If a variable is defined by DIM or CONST, only a single variable can use that name.
         // Otherwise, an 'auto' variable of each basic type can be used with the same name (X%, X$, etc...)
+        {
+            const dimVar = this.dimVars.get(name);
+            if (dimVar) {
+                return dimVar;
+            }
+        }
+        {
+            const constVar = this.constVars.get(name);
+            if (constVar) {
+                return constVar;
+            }
+        }
+        const key = name + baseTypeToSigil(sigil);
+        const autoVar = this.autoVars.get(key);
+        if (autoVar) return autoVar;
+        if (this.parent) {
+            const v = this.parent.findVariable(name, sigil);
+            if (v && v.shared) return v;
+        }
+        return undefined;
+    }
+
+    // Returns a Val that represents a named variable.
+    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val {
         let name = "";
         let location: Location | undefined;
         if (varName instanceof Token) {
@@ -226,31 +252,17 @@ export class CodegenCtx implements ICtx {
         } else {
             name = varName as string;
         }
-        {
-            const dimVar = this.dimVars.get(name);
-            if (dimVar) {
-                if (sigil === BaseType.kNone || dimVar.baseType() === sigil) {
-                    return dimVar;
-                } else {
+        const existing = this.findVariable(name, sigil);
+        if (existing) {
+            if (sigil !== BaseType.kNone) {
+                if (existing.baseType() !== sigil) {
                     this.error("duplicate definition", location);
                     return kNullVal;
                 }
             }
-        }
-        {
-            const constVar = this.constVars.get(name);
-            if (constVar) {
-                if (sigil === BaseType.kNone || constVar.baseType() === sigil) {
-                    return constVar;
-                } else {
-                    this.error("duplicate definition", location);
-                    return kNullVal;
-                }
-            }
+            return existing;
         }
         const key = name + baseTypeToSigil(sigil);
-        const autoVar = this.autoVars.get(key);
-        if (autoVar) return autoVar;
         const v = Val.newVar(name, defaultType);
         this.autoVars.set(key, v);
 
@@ -290,6 +302,7 @@ export class CodegenCtx implements ICtx {
         this.error("index of this kind not implemented");
         return kNullVal;
     }
+
     indexField(v: Val, idx: Token): Val | undefined {
         if (!v.isVar() && !v.isField()) {
             this.error("syntax error");
@@ -302,7 +315,8 @@ export class CodegenCtx implements ICtx {
         }
         return Val.newField(field.name, field.type, v);
     }
-    dim(name: Token, size?: Val[][], ty?: Type) {
+
+    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -328,12 +342,15 @@ export class CodegenCtx implements ICtx {
                 numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
             }
         }
-        const v = Val.newVar(name.text, ty ? ty : kIntType, numericSize);
+        const v = Val.newVar(name.text, ty, numericSize);
+        v.dimmed = true;
+        if (shared) v.shared = true;
         this.dimVars.set(name.text, v);
         const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
         vv.dims = numericSize;
         this.write(vm.InstructionID.DECLARE_VAR, name.text, vv);
     }
+
     binaryOpType(a: Type, b: Type): Type {
         if (a.type === BaseType.kString && b.type === BaseType.kString) {
             return kStringType;
@@ -632,7 +649,7 @@ export class CodegenCtx implements ICtx {
         fnCtx.g = this.g;
         fnCtx.parent = this;
         fnCtx.fnInfo = fn;
-        fnCtx.dim(id, undefined, returnType);
+        fnCtx.dim(id, undefined, returnType, false);
         return fnCtx;
     }
 
@@ -707,7 +724,7 @@ export class CodegenCtx implements ICtx {
             }
         }
         // The VM doesn't know how much stack is actually in-use, so we have to tell it when calling a function.
-        sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, this.stackOffset, 0/*pc*/, argNames));
+        sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, this.stackOffset, argNames));
         for (const a of tempArgs) {
             this.autoVars.delete(a);
         }
@@ -908,6 +925,30 @@ export class CodegenCtx implements ICtx {
         g.token = lbl;
         this.g.gotos.push(g);
     }
+    goReturn(token: Token | undefined, lbl: number | string | undefined) {
+        if (lbl === undefined) {
+            this.emit(vm.InstructionID.EXIT_SUB);
+            return;
+        }
+        const g = new GotoInfo(this.emit(vm.InstructionID.RETURN, 0/*pc*/));
+        if (token) g.token = token;
+        if (typeof (lbl) === "number") {
+            g.lineNumber = lbl;
+        } else if (lbl !== undefined) {
+            g.label = lbl;
+        }
+        this.g.gotos.push(g);
+    }
+    gosub(token: Token, lbl: number | string) {
+        const g = new GotoInfo(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, this.stackOffset));
+        g.token = token;
+        if (typeof (lbl) === "number") {
+            g.lineNumber = lbl;
+        } else {
+            g.label = lbl;
+        }
+        this.g.gotos.push(g);
+    }
     locate(x: Val, y: Val) {
         this.write(vm.InstructionID.LOCATE, x, y);
     }
@@ -1009,11 +1050,13 @@ export class CodegenCtx implements ICtx {
         }
         this.write(vm.InstructionID.SCREEN, id);
     }
-
+    randomize(seed: Val) {
+        this.write(vm.InstructionID.RANDOMIZE, seed);
+    }
     finalize() {
         for (const [name, sub] of this.g.subs) {
             for (const call of sub.calls) {
-                call.args[1] = sub.startPc;
+                call.args[0] = sub.startPc;
             }
         }
         for (const [name, fn] of this.g.functions) {
@@ -1022,19 +1065,21 @@ export class CodegenCtx implements ICtx {
             }
         }
         for (const g of this.g.gotos) {
+            let pc: number | undefined;
             if (g.label) {
-                if (!this.g.labels.has(g.label)) {
+                pc = this.g.labels.get(g.label);
+                if (pc === undefined) {
                     this.error("label not found", g.token.loc);
                     continue;
                 }
-                g.inst.args[0] = this.g.labels.get(g.label);
             } else {
-                if (!this.g.lineNumbers.has(g.lineNumber)) {
+                pc = this.g.lineNumbers.get(g.lineNumber);
+                if (pc === undefined) {
                     this.error("line number not found", g.token.loc);
                     continue;
                 }
-                g.inst.args[0] = this.g.lineNumbers.get(g.lineNumber);
             }
+            g.inst.args[0] = pc;
         }
     }
     private assign(variable: Val, stackPos: number) {
@@ -1054,7 +1099,11 @@ export class CodegenCtx implements ICtx {
         if (baseVar.argIndex !== undefined) {
             this.write(vm.InstructionID.ASSIGN_ARG, baseVar.argIndex, stackPos, index, fieldIndex);
         } else {
-            this.write(vm.InstructionID.ASSIGN_VAR, this.varAddr(baseVar), stackPos, index, fieldIndex);
+            if (baseVar.shared) {
+                this.write(vm.InstructionID.ASSIGN_VAR_SHARED, this.varAddr(baseVar), stackPos, index, fieldIndex);
+            } else {
+                this.write(vm.InstructionID.ASSIGN_VAR, this.varAddr(baseVar), stackPos, index, fieldIndex);
+            }
         }
     }
     private constNumber(n: number, ty: Type): Val {
@@ -1075,8 +1124,7 @@ export class CodegenCtx implements ICtx {
     }
     private varAddr(v: Val): string {
         if (v.isVar()) {
-            const dimVar = this.dimVars.get(v.varName);
-            if (dimVar) return v.varName;
+            if (v.dimmed) return v.varName;
             const autoKey = this.autoVarKey(v);
             const autoVar = this.autoVars.get(autoKey);
             if (autoVar) return autoKey;
@@ -1121,7 +1169,11 @@ export class CodegenCtx implements ICtx {
         if (baseVar.argIndex !== undefined) {
             this.write(vm.InstructionID.LOAD_ARGVAL, stackIndex, baseVar.argIndex, index, fieldIndex);
         } else {
-            this.write(vm.InstructionID.LOAD_VARVAL, stackIndex, this.varAddr(baseVar), index, fieldIndex);
+            if (baseVar.shared) {
+                this.write(vm.InstructionID.LOAD_VARVAL_SHARED, stackIndex, this.varAddr(baseVar), index, fieldIndex);
+            } else {
+                this.write(vm.InstructionID.LOAD_VARVAL, stackIndex, this.varAddr(baseVar), index, fieldIndex);
+            }
         }
         return Val.newStackValue(variable.type, stackIndex);
     }

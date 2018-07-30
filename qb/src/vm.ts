@@ -87,9 +87,11 @@ export enum InstructionID {
     // pos = array index: array of stack index (number[])
     // For instructions that write to a stack value, the output is the first parameter.
     LOAD_VARVAL, // S name [pos] [fieldIndex ...]
+    LOAD_VARVAL_SHARED,
     LOAD_ARGVAL, // S name [pos]
     DECLARE_VAR, // name V
     ASSIGN_VAR, // name S [pos]
+    ASSIGN_VAR_SHARED, // name S [pos]
     ASSIGN_ARG, // arg-index S [pos]
     INPUT, // InputSpec
     TO_INT, // S S
@@ -98,9 +100,10 @@ export enum InstructionID {
     TO_DOUBLE, // S S
     BRANCH_IFNOT, // PC S
     BRANCH, // PC
-    CALL_SUB, // stack-size PC string[]
+    CALL_SUB, // PC stack-size string[]
     CALL_FUNCTION, // stack-size S PC string[]
     EXIT_SUB, // <no parameters>
+    RETURN, // PC
     SET_RETURN, // S
     ADD, // S S S
     SUB, // S S S
@@ -152,6 +155,8 @@ export enum InstructionID {
     CDBL, // S S
     CSNG, // S S
     EXP, // S S
+    TIMER, // S
+    RANDOMIZE, // S
 }
 
 // These instructions produce constant output given constant inputs.
@@ -528,6 +533,7 @@ export class Execution {
     public done: boolean = false;
 
     private frame: Frame = new Frame();
+    private moduleFrame: Frame = this.frame;
     // Data addressed by negative numbers.
     private data: any[];
     private inRun: boolean;
@@ -551,14 +557,26 @@ export class Execution {
             return this.data[-addr];
         }
     }
+    readShared(addr: number): any {
+        return this.stack[addr];
+    }
     readVal(addr: number): VariableValue {
         return this.read(addr);
+    }
+    readValShared(addr: number): VariableValue {
+        return this.readShared(addr);
     }
     save(addr: number, val: any) {
         while (this.stack.length <= addr) {
             this.stack.push(null);
         }
         this.stack[this.stackIndex(addr)] = val;
+    }
+    saveShared(addr: number, val: any) {
+        while (this.stack.length <= addr) {
+            this.stack.push(null);
+        }
+        this.stack[addr] = val;
     }
     run(maxSteps = 100000) {
         this.inRun = true;
@@ -597,7 +615,7 @@ export class Execution {
             console.error("called step while in wait");
         }
         const inst = this.prog.inst[this.frame.pc];
-        // console.log(inst.toString(this.prog));
+        //console.log(inst.toString(this.prog));
         const args = inst.args;
         this.frame.pc++;
         switch (inst.id) {
@@ -616,6 +634,24 @@ export class Execution {
                     this.raise("index out of range");
                 } else {
                     this.save(idx, value);
+                }
+                break;
+            }
+            case InstructionID.LOAD_VARVAL_SHARED: {
+                const idx = args[0];
+                const varName = args[1];
+                const posStackIndices = args[2] as number[] | undefined;
+                const fieldIndices = args[3] as number[] | undefined;
+                let index: number[] | undefined;
+                if (posStackIndices) {
+                    index = posStackIndices.map((i) => this.readVal(i).val as number);
+                }
+                const value = this.moduleFrame.readVar(varName, index, fieldIndices);
+                if (value instanceof IndexOutOfRange) {
+                    this.frame.pc--;
+                    this.raise("index out of range");
+                } else {
+                    this.saveShared(idx, value);
                 }
                 break;
             }
@@ -648,6 +684,19 @@ export class Execution {
                 const v = this.frame.vars.get(args[0] as string);
                 if (!v) {
                     this.raise("ASSIGN_VAR does not exist");
+                    break;
+                }
+                const val = this.readVal(args[1]);
+                let index = args.length > 2 ? args[2] as number[] : undefined;
+                if (index) index = index.map((i) => this.readVal(i).getNumber());
+                const fieldIndex = args.length > 3 ? args[3] as number[] : undefined;
+                v.setVal(val.val, index, fieldIndex);
+                break;
+            }
+            case InstructionID.ASSIGN_VAR_SHARED: {
+                const v = this.moduleFrame.vars.get(args[0] as string);
+                if (!v) {
+                    this.raise("ASSIGN_VAR_SHARED does not exist");
                     break;
                 }
                 const val = this.readVal(args[1]);
@@ -852,9 +901,9 @@ export class Execution {
             case InstructionID.CALL_SUB: {
                 const f = new Frame();
                 f.parent = this.frame;
-                f.stackOffset = this.frame.stackOffset + args[0] as number;
+                f.stackOffset = this.frame.stackOffset + args[1] as number;
                 f.foreignArgNames = args[2] as string[];
-                f.pc = args[1] as number;
+                f.pc = args[0] as number;
                 this.frame = f;
                 break;
             }
@@ -870,6 +919,11 @@ export class Execution {
             }
             case InstructionID.EXIT_SUB: {
                 this.frame = this.frame.parent as Frame;
+                break;
+            }
+            case InstructionID.RETURN: {
+                this.frame = this.frame.parent as Frame;
+                this.frame.pc = args[0] as number;
                 break;
             }
             case InstructionID.SET_RETURN: {
@@ -1058,10 +1112,22 @@ export class Execution {
                 this.save(args[0], VariableValue.single(kDoubleType, Math.floor(this.readVal(args[1]).numVal())));
                 break;
             }
+            case InstructionID.TIMER: {
+                const now = new Date();
+                const then = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+                const diff = now.getTime() - then.getTime();
+                this.save(args[0], VariableValue.single(kDoubleType, diff / 1000.0));
+                break;
+            }
+            case InstructionID.RANDOMIZE: {
+                this.rnd.seed = toLong(this.readVal(args[0]).numVal());
+                break;
+            }
             case InstructionID.END: {
                 this.end();
                 return false;
             }
+
             default: {
                 console.log("Not implemented");
                 break;

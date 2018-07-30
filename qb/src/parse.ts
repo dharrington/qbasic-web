@@ -107,6 +107,8 @@ export class Val {
     public numberValue: number;
     public stringValue: string;
     public varName: string;
+    public dimmed?: boolean;
+    public shared?: boolean;
     // When true, this is a variable whos value is known.
     public stackOffset: number;
     public argIndex: number; // Non-null for variables which are arguments to subroutines.
@@ -121,6 +123,8 @@ export class Val {
         if (this.numberValue) v.numberValue = this.numberValue;
         if (this.stringValue) v.stringValue = this.stringValue;
         if (this.varName) v.varName = this.varName;
+        if (this.shared) v.shared = this.shared;
+        if (this.dimmed) v.dimmed = this.dimmed;
         if (this.stackOffset) v.stackOffset = this.stackOffset;
         if (this.argIndex) v.argIndex = this.argIndex;
         return v;
@@ -169,7 +173,7 @@ export interface ICtx {
     index(v: Val, idx: Val[]): Val;
     // x.field
     indexField(v: Val, idx: Token): Val | undefined;
-    dim(name: Token, size?: Val[][], ty?: Type);
+    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean);
     op(name: string, operands: Val[]): Val;
     sub(id: Token, args: Val[]): ICtx;
     subExit();
@@ -198,6 +202,8 @@ export interface ICtx {
     wend();
     gotoLine(no: number, numberToken: Token);
     gotoLabel(lbl: Token);
+    goReturn(token: Token | undefined, lbl: number | string | undefined);
+    gosub(token: Token, lbl: number | string);
     color(fore?: Val, back?: Val);
     line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val);
     pset(a: Coord, color: Val | undefined);
@@ -206,6 +212,7 @@ export interface ICtx {
     palette(attr?: Val, col?: Val);
     sleep(delay?: Val);
     endStmt();
+    randomize(seed: Val);
 }
 
 // A minimal implementation of ICtx that can parse code.
@@ -263,7 +270,7 @@ export class NullCtx implements ICtx {
     indexField(v: Val, idx: Token): Val | undefined {
         return undefined;
     }
-    dim(name: Token, size?: Val[][], ty?: Type) {
+    dim(name: Token, size: Val[][], ty: Type, shared: boolean) {
         if (this.dimVars.has(name.text)) {
             this.error("duplicate definition", name.loc);
             return;
@@ -319,6 +326,8 @@ export class NullCtx implements ICtx {
     wend() { }
     gotoLine(no: number, tok: Token) { }
     gotoLabel(lbl: Token) { }
+    goReturn(token: Token, lbl: number | string | undefined) { }
+    gosub(token: Token, lbl: number | string) { }
     color(fore: Val, back: Val) { }
     line(a: Coord, b: Coord, color: Val, option: string, style?: Val) { }
     pset(a: Coord, color: Val | undefined) { }
@@ -327,6 +336,7 @@ export class NullCtx implements ICtx {
     palette(attr: Val, col: Val) { }
     sleep(delay?: Val) { }
     endStmt() { }
+    randomize(seed: Val) { }
 }
 
 export function parse(ctx: ICtx, tokens: Token[]) {
@@ -685,14 +695,17 @@ class Parser {
         this.expectIdent("DIM");
         const shared = this.nextIf("SHARED");
         let id = this.expectIdent();
+        let sigil = this.maybeSigil();
         if (!id) return;
         let size = this.maybeArraySize();
         while (true) {
+            let ty = this.defaultType(id.text, sigil);
             if (this.nextIf("AS")) {
-                this.ctx.dim(id, size, this.typename());
-            } else {
-                this.ctx.dim(id, size);
+                const result = this.typename();
+                if (!result) return;
+                ty = result;
             }
+            this.ctx.dim(id, size, ty, shared !== undefined);
             if (this.tok().isOp(",")) {
                 ++this.tokenIndex;
                 id = this.expectIdent();
@@ -1276,6 +1289,36 @@ class Parser {
             }
         }
     }
+    labelOrLineNumber(): number | string | undefined {
+        if (this.tok().isNumber() && /^[0-9]+$/.test(this.tok().text)) {
+            const result = parseInt(this.tok().text, 10);
+            this.next();
+            return result;
+        } else {
+            const lbl = this.expectIdent();
+            if (lbl) return lbl.text;
+        }
+        this.error("expected line number or label");
+        return undefined;
+    }
+    gosubStmt() {
+        this.expectIdent("GOSUB");
+        const tok = this.tok();
+        const lbl = this.labelOrLineNumber();
+        if (lbl === undefined) return;
+        this.ctx.gosub(tok, lbl);
+    }
+    returnStmt() {
+        this.expectIdent("RETURN");
+        let lbl: number | string | undefined;
+        let tok: Token | undefined;
+        if (!this.isEol()) {
+            tok = this.tok();
+            lbl = this.labelOrLineNumber();
+            if (lbl === undefined) return;
+        }
+        this.ctx.goReturn(tok, lbl);
+    }
     nextStmt() {
         this.expectIdent("NEXT");
         const block = this.currentBlock();
@@ -1484,6 +1527,12 @@ class Parser {
             this.ctx.declConst(id, sig, rhs);
         } while (this.nextIf(","));
     }
+    randomizeStmt() {
+        this.expectIdent("RANDOMIZE");
+        const expr = this.numericExpr();
+        if (!expr) return;
+        this.ctx.randomize(expr);
+    }
     statement(moduleLevel: boolean, allowHardNewline: boolean = true): boolean {
         if (this.isEof()) { return false; }
         const hasLabels = this.maybeLabels();
@@ -1505,6 +1554,8 @@ class Parser {
                     case "DEFSNG":
                     case "DEFLNG":
                     case "DEFDBL": this.defABCStmt(); break;
+                    case "GOSUB": this.gosubStmt(); break;
+                    case "RETURN": this.returnStmt(); break;
                     case "FOR": this.forStmt(); break;
                     case "NEXT": this.nextStmt(); break;
                     case "EXIT": this.exitStmt(); break;
@@ -1527,6 +1578,7 @@ class Parser {
                     case "WHILE": this.whileStmt(); break;
                     case "WEND": this.wendStmt(); break;
                     case "CONST": this.constStmt(); break;
+                    case "RANDOMIZE": this.randomizeStmt(); break;
                     default: return false;
                 }
                 return true;
