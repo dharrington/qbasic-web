@@ -23,17 +23,30 @@ import * as path from "path";
 
 let passCount = 0;
 let failCount = 0;
+class Expectation {
+    public output?: string;
+    public exception?: string;
+    constructor() { }
+}
 function testProgram(programPath: string) {
     console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
+    const exp = new Expectation();
+    {
+        const m = /REM exception (.*)/.exec(fileText);
+        if (m) {
+            exp.exception = m[1].trim();
+        }
+    }
+
     const parts = fileText.split("\nREM output\n");
     let programText = fileText;
-    let desiredOutput: string | undefined;
     if (parts.length === 2) {
-        [programText, desiredOutput] = parts;
+        programText = parts[0];
+        exp.output = parts[1];
     }
-    runSuccess(programText, desiredOutput);
+    runSuccess(programText, exp);
 }
 function testCases(caseDir = process.argv[2]) {
     for (const f of fs.readdirSync(caseDir)) {
@@ -49,7 +62,7 @@ function testCases(caseDir = process.argv[2]) {
 function visualizeWhitespace(output: string): string {
     return output.replace(/ /g, String.fromCharCode(183));
 }
-function runSuccess(program: string, expectOutput: string | undefined) {
+function runSuccess(program: string, exp: Expectation) {
     const stepQuota = 10000;
 
     const tokens = lex(program);
@@ -68,13 +81,21 @@ function runSuccess(program: string, expectOutput: string | undefined) {
     exe.run(stepQuota);
     pc.textOutput = pc.textOutput.trimRight();
     let failed = false;
-    if (exe.exception) {
-        console.log(`Program had exception: ${exe.exception}.`);
-        failed = true;
-    } else if (!exe.done) {
+    if (exp.exception !== undefined) {
+        if (exe.exception !== exp.exception) {
+            console.log(`Program should have had exception: ${exp.exception}, but exception was '${exe.exception}'`);
+            failed = true;
+        }
+    } else {
+        if (exe.exception) {
+            console.log(`Program had exception: ${exe.exception}.`);
+            failed = true;
+        }
+    }
+    if (!failed && !exe.exception && !exe.done) {
         console.log(`Program not complete, is there an infinite loop?`);
         failed = true;
-    } else if (expectOutput !== undefined && expectOutput.trimRight() !== pc.textOutput) {
+    } else if (exp.output !== undefined && exp.output.trimRight() !== pc.textOutput) {
         console.log(`Program complete with incorrect output`);
         failed = true;
     }
@@ -91,10 +112,10 @@ Got:
 ${visualizeWhitespace(pc.textOutput)}
 -------------------------------------------------------------------------------
 `);
-    if (expectOutput !== undefined) {
+    if (exp.output !== undefined) {
         console.log(`Want:
 -------------------------------------------------------------------------------
-${visualizeWhitespace(expectOutput)}
+${visualizeWhitespace(exp.output.trimRight())}
 -------------------------------------------------------------------------------
 `);
     }

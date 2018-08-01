@@ -115,3 +115,4 @@ export const kStringType = Type.makeBasic(BaseType.kString);
 export const kDoubleType = Type.makeBasic(BaseType.kDouble);
 export const kSingleType = Type.makeBasic(BaseType.kSingle);
 export const kLongType = Type.makeBasic(BaseType.kLongInt);
+

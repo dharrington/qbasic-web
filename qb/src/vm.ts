@@ -75,6 +75,27 @@ export class NullPC implements IVirtualPC {
     }
 }
 
+function convertNumber(n: number, baseType: BaseType): number | string {
+    switch (baseType) {
+        case BaseType.kString:
+            return "" + n;
+            break;
+        case BaseType.kInt:
+            return toInt(n);
+            break;
+        case BaseType.kLongInt:
+            return toLong(n);
+            break;
+        case BaseType.kSingle:
+            return Math.fround(n);
+            break;
+        case BaseType.kDouble:
+            return n;
+            break;
+    }
+    return n;
+}
+
 export enum InstructionID {
     // Annotation:
     // S = stack index (number)
@@ -157,6 +178,9 @@ export enum InstructionID {
     EXP, // S S
     TIMER, // S
     RANDOMIZE, // S
+    READ, // S BaseType
+    RESTORE, // DP
+    NOP,
 }
 
 // These instructions produce constant output given constant inputs.
@@ -443,6 +467,8 @@ export class Program {
     public inst: Instruction[] = [];
     // The program's const data.
     public data: VariableValue[] = [];
+    // Contains an entry for each DATA statement value. Each is an offset into data.
+    public dataList: number[] = [];
     toString(): string {
         return this.inst.map((inst, idx) => `${idx}\t` + inst.toString(this)).join("\n");
     }
@@ -540,6 +566,7 @@ export class Execution {
     private lastPointX: number = 0;
     private lastPointY: number = 0;
     private rnd: Rnd = new Rnd();
+    private readPos = 0;
     constructor(private prog: Program, private vpc: IVirtualPC) {
         this.data = prog.data;
     }
@@ -1121,6 +1148,34 @@ export class Execution {
             }
             case InstructionID.RANDOMIZE: {
                 this.rnd.seed = toLong(this.readVal(args[0]).numVal());
+                break;
+            }
+            case InstructionID.READ: {
+                if (this.readPos >= this.prog.dataList.length) {
+                    this.raise("Out of DATA");
+                    break;
+                }
+                const dataVal = this.prog.data[this.prog.dataList[this.readPos++]];
+                const readType: BaseType = args[1];
+                let readVal: any;
+                if (dataVal.type === kStringType) {
+                    if (readType === BaseType.kString) {
+                        readVal = dataVal.val;
+                    } else {
+                        this.raise("syntax error");
+                        break;
+                    }
+                } else {
+                    readVal = convertNumber(dataVal.numVal(), readType);
+                }
+                this.save(args[0], VariableValue.single(Type.basic(readType) as Type, readVal));
+                break;
+            }
+            case InstructionID.RESTORE: {
+                this.readPos = args[0];
+                break;
+            }
+            case InstructionID.NOP: {
                 break;
             }
             case InstructionID.END: {

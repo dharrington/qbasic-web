@@ -168,6 +168,8 @@ export interface ICtx {
     lineNumber(num: number, tok: Token);
     newline(lineNumber: number);
     data(dataArray: Val[]);
+    read(args: Val[]);
+    restore(label: number | string);
     variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
     index(v: Val, idx: Val[]): Val;
@@ -213,6 +215,7 @@ export interface ICtx {
     sleep(delay?: Val);
     endStmt();
     randomize(seed: Val);
+    end();
 }
 
 // A minimal implementation of ICtx that can parse code.
@@ -246,6 +249,8 @@ export class NullCtx implements ICtx {
     lineNumber(num: number, tok: Token) { }
     newline(num: number) { }
     data(dataArray: Val[]) { }
+    read(args: Val[]) { }
+    restore(label: number | string) { }
     variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined {
         const dimVar = this.dimVars.get(varName.text);
         if (dimVar) {
@@ -337,6 +342,7 @@ export class NullCtx implements ICtx {
     sleep(delay?: Val) { }
     endStmt() { }
     randomize(seed: Val) { }
+    end() { }
 }
 
 export function parse(ctx: ICtx, tokens: Token[]) {
@@ -593,12 +599,14 @@ class Parser {
         }
         return v;
     }
+    expectModuleLevel() {
 
-    data() { // DATA [value, ...]
-        if (!this.tok().isIdent("DATA")) return;
-        this.next();
+    }
+    dataStmt() { // DATA [value, ...]
+        this.expectIdent("DATA");
+        this.expectModuleLevel();
         const datas: Val[] = [];
-        while (this.tok().id !== TokenType.kNewline) {
+        while (1) {
             let v = this.maybeStringLiteral() || this.maybeNumberLiteral();
             if (!v) {
                 if (this.tok().id === TokenType.kIdent) { // unquoted string
@@ -610,10 +618,22 @@ class Parser {
                     return true;
                 }
             }
-            this.expectOp(",");
             datas.push(v);
+            if (!this.nextIf(",")) break;
         }
         this.ctx.data(datas);
+    }
+    readStmt() {
+        this.expectIdent("READ");
+        const args = this.varRefsUntilNewline();
+        if (args) this.ctx.read(args);
+        return true;
+    }
+    restoreStmt() {
+        this.expectIdent("RESTORE");
+        const lbl = this.labelOrLineNumber();
+        if (lbl === undefined) return;
+        this.ctx.restore(lbl);
     }
     maybeSigil(): BaseType {
         const next = this.tok();
@@ -1200,7 +1220,7 @@ class Parser {
     }
 
     varRefsUntilNewline(): Val[] | undefined {
-        const args = [];
+        const args: Val[] = [];
         while (!this.isEol()) {
             // TODO: This is pretty ugly. Single-line IF statements force checking additional terminals...
             if (this.tok().text === "END" || this.tok().text === "ELSE" || this.tok().text === "ELSEIF") {
@@ -1208,13 +1228,12 @@ class Parser {
             }
             const v = this.maybeVarname(true);
             if (!v) { this.expectIdent(); return undefined; }
-            args.push();
+            args.push(v);
             if (this.isEol()) {
                 return args;
             }
-            if (!this.tok().isOp(",")) {
-                this.error("expected ',' or newline");
-                return args;
+            if (!this.expectOp(",")) {
+                return undefined;
             }
         }
         return args;
@@ -1533,6 +1552,10 @@ class Parser {
         if (!expr) return;
         this.ctx.randomize(expr);
     }
+    endStmt() {
+        this.expectIdent("END");
+        this.ctx.end();
+    }
     statement(moduleLevel: boolean, allowHardNewline: boolean = true): boolean {
         if (this.isEof()) { return false; }
         const hasLabels = this.maybeLabels();
@@ -1579,6 +1602,13 @@ class Parser {
                     case "WEND": this.wendStmt(); break;
                     case "CONST": this.constStmt(); break;
                     case "RANDOMIZE": this.randomizeStmt(); break;
+                    case "END": this.endStmt(); break;
+                    case "DATA": this.dataStmt(); break;
+                    case "READ": this.readStmt(); break;
+                    case "RESTORE": this.restoreStmt(); break;
+                    case "POKE": // TODO: implement
+                    case "PEEK": this.eatUntilNewline(); break;
+                    case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
                     default: return false;
                 }
                 return true;

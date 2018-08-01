@@ -1,0 +1,19 @@
+1  DATA 1, 2, 3
+B: DATA 9, 10, 11
+READ X,Y
+PRINT X;Y
+RESTORE 1
+READ Z, W
+PRINT Z;W
+READ M, M, M, N
+PRINT N
+RESTORE B
+READ M,M,N
+PRINT N
+READ N
+REM exception Out of DATA
+REM output
+ 1  2 
+ 1  2 
+ 11 
+ 11 

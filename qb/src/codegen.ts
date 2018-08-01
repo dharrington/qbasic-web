@@ -62,7 +62,12 @@ class FunctionInfo {
     public builtinOp?: vm.InstructionID;
     constructor(public type: FunctionType, public builtin: boolean) { }
 }
-
+class DataStmtOffset {
+    constructor(public instructionIndex: number, public dataOffset: number) { }
+}
+class RestoreInfo {
+    constructor(public restoreInst: vm.Instruction, public lbl: number | string) { }
+}
 // Data shared by all instances of CodegenCtx when parsing a program.
 class GlobalCtx {
     public functions = new Map<string, FunctionInfo>();
@@ -75,7 +80,9 @@ class GlobalCtx {
     public errors: string[] = [];
     public errorLocations: Location[] = [];
     public gotos: GotoInfo[] = []; // goto, gosub, and return
+    public restores: RestoreInfo[] = [];
     public currentLine = 0;
+    public dataOffsets: DataStmtOffset[] = [];
     // Has the END instruction been written?
     public isEnd = false;
     constructor() {
@@ -210,7 +217,41 @@ export class CodegenCtx implements ICtx {
     newline(lineNumber: number) {
         this.g.currentLine = lineNumber;
     }
-    data(dataArray: Val[]) { /*TODO*/ }
+    data(dataArray: Val[]) {
+        this.g.dataOffsets.push(new DataStmtOffset(this.program().inst.length, this.program().dataList.length));
+        // I've got line numbers and labels mapping to instruction offsets. Since DATA doesn't really need an
+        // instruction I instead write a NOP.
+        this.emit(vm.InstructionID.NOP);
+        for (const v of dataArray) {
+            const c = this.constDataVal(v);
+            if (!c) {
+                this.error("internal error");
+                break;
+            }
+            this.g.program.dataList.push(-c.stackOffset);
+        }
+    }
+    restore(lbl: string | number) {
+        this.g.restores.push(new RestoreInfo(this.emit(vm.InstructionID.RESTORE, 0), lbl));
+    }
+
+    read(args: Val[]) {
+        const inputs: vm.SingleInput[] = [];
+        const S = this.nextStackOffset();
+        for (const v of args) {
+            if (!v.isVar) {
+                this.error("READ parameter not a variable");
+                return;
+            }
+            if (!v.type.isBasic()) {
+                this.error("Expected basic type");
+                return;
+            }
+            this.write(vm.InstructionID.READ, S, v.baseType());
+            this.assign(v, S);
+        }
+    }
+
     endStmt() {
         // It's not possible for a stack variable to be referenced in more than one statement, so we can
         // reuse the stack offsets after each statement.
@@ -1053,7 +1094,31 @@ export class CodegenCtx implements ICtx {
     randomize(seed: Val) {
         this.write(vm.InstructionID.RANDOMIZE, seed);
     }
+
     finalize() {
+        for (const r of this.g.restores) {
+            let pc;
+            if (typeof (r.lbl) === "string") {
+                pc = this.g.labels.get(r.lbl);
+                if (pc === undefined) {
+                    this.error("label not found");
+                    continue;
+                }
+            } else {
+                pc = this.g.lineNumbers.get(r.lbl);
+                if (pc === undefined) {
+                    this.error("line number not found");
+                    continue;
+                }
+            }
+            r.restoreInst.args[0] = 1 << 32;
+            for (const d of this.g.dataOffsets) {
+                if (pc <= d.instructionIndex) {
+                    r.restoreInst.args[0] = d.dataOffset;
+                    break;
+                }
+            }
+        }
         for (const [name, sub] of this.g.subs) {
             for (const call of sub.calls) {
                 call.args[0] = sub.startPc;
@@ -1081,6 +1146,9 @@ export class CodegenCtx implements ICtx {
             }
             g.inst.args[0] = pc;
         }
+    }
+    end() {
+        this.write(vm.InstructionID.END);
     }
     private assign(variable: Val, stackPos: number) {
         let index: number[] | undefined;
@@ -1177,12 +1245,8 @@ export class CodegenCtx implements ICtx {
         }
         return Val.newStackValue(variable.type, stackIndex);
     }
-    // Convert v to a value that is on the stack.
-    private stackify(v?: Val): Val {
-        if (!v) return kNullVal;
-        if (v.isStackValue()) return v;
+    private constDataVal(v: Val): Val | undefined {
         if (v.isLiteral() || v.isConst()) {
-            // Literals and const values can be converted to a const data offset.
             const key = CodegenCtx.valConstKey(v);
             const constVal = this.g.constantVals.get(key);
             if (constVal) return constVal;
@@ -1193,6 +1257,16 @@ export class CodegenCtx implements ICtx {
             this.g.constantVals.set(key, r);
             return r;
         }
+        return undefined;
+    }
+    // Convert v to a value that is on the stack.
+    private stackify(v?: Val): Val {
+        if (!v) return kNullVal;
+        const constVal = this.constDataVal(v);
+        if (constVal !== undefined) {
+            return constVal;
+        }
+        if (v.isStackValue()) return v;
         if (v.isVar() || v.isField()) {
             return this.loadVar(this.nextStackOffset(), v) || kNullVal;
         }
