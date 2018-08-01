@@ -156,6 +156,8 @@ export class Coord {
     constructor(public step: boolean, public x: Val, public y: Val) { }
 }
 
+export type MVal = Val | undefined;
+
 // The parser is fairly dumb, and just relays information to a context. The primary purpose of the context is to
 // generate code, but there are other activities you might perform, like syntax highlighting or autocompletion.
 export interface ICtx {
@@ -172,11 +174,11 @@ export interface ICtx {
     restore(label: number | string);
     variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
-    index(v: Val, idx: Val[]): Val;
+    index(v: Val, idx: Val[]): Val | undefined;
     // x.field
     indexField(v: Val, idx: Token): Val | undefined;
     dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean);
-    op(name: string, operands: Val[]): Val;
+    op(name: string, operands: Val[]): MVal;
     sub(id: Token, args: Val[]): ICtx;
     subExit();
     functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx;
@@ -189,7 +191,7 @@ export interface ICtx {
     isSub(id: string): boolean;
     lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]);
-    callFunction(id: string, args: Val[]): Val;
+    callFunction(id: string, args: Val[]): MVal;
     input(keepCursor: boolean, prompt: string, args: Val[]);
     ifBegin(cond: Val);
     elseBegin(cond?: Val);
@@ -269,7 +271,7 @@ export class NullCtx implements ICtx {
         return v;
     }
     declConst(id: Token, ty: BaseType, value: Val) { }
-    index(v: Val, idx: Val[]): Val {
+    index(v: Val, idx: Val[]): Val | undefined {
         return v;
     }
     indexField(v: Val, idx: Token): Val | undefined {
@@ -290,9 +292,9 @@ export class NullCtx implements ICtx {
         // this.dimVars.set(name.text, v);
     }
 
-    op(name: string, operands: Val[]): Val {
+    op(name: string, operands: Val[]): MVal {
         console.log("OP " + name + operands);
-        return kNullVal;
+        return undefined;
     }
     sub(id: Token): ICtx {
         return this;
@@ -313,7 +315,7 @@ export class NullCtx implements ICtx {
         return this.subs.has(id);
     }
     callSub(id: Token, args: Val[]) { }
-    callFunction(id: string, args: Val[]): Val { return kNullVal; }
+    callFunction(id: string, args: Val[]): MVal { return undefined; }
     lookupFunction(id: string): FunctionType | undefined {
         return undefined;
     }
@@ -520,7 +522,7 @@ class Parser {
         if (!args) return undefined;
         return this.ctx.op("ABS", args);
     }
-    maybeFunctionCall(): Val | undefined {
+    maybeFunctionCall(): MVal {
         if (!this.tok(0).isIdent()) return undefined;
         const id = this.tok(0).text;
         let tokenCount: number;
@@ -773,7 +775,11 @@ class Parser {
             for (const o of ops) {
                 if (op.text === o) {
                     this.next();
-                    lhs = this.ctx.op(op.text, [lhs, nextFunc()]);
+                    const rhs = nextFunc();
+                    if (!rhs) return undefined;
+                    const result = this.ctx.op(op.text, [lhs, rhs]);
+                    if (!result) return undefined;
+                    lhs = result;
                     matches = true;
                     break;
                 }
@@ -1386,7 +1392,7 @@ class Parser {
     doStmt() {
         const doTok = this.expectIdent("DO");
         if (!doTok) return;
-        let whileCond: Val = kValTrue;
+        let whileCond: MVal = kValTrue;
         if (this.nextIf("UNTIL")) {
             const until = this.expr();
             if (!until) return;
@@ -1396,6 +1402,7 @@ class Parser {
             if (!cond) return;
             whileCond = cond;
         }
+        if (!whileCond) return;
         this.openBlocks.push(new Block(doTok, "DO"));
         this.ctx.doBegin(whileCond);
     }
@@ -1407,7 +1414,7 @@ class Parser {
             return;
         }
         this.openBlocks.pop();
-        let untilCond = kValZero;
+        let untilCond: MVal = kValZero;
         if (this.nextIf("UNTIL")) {
             const cond = this.expr();
             if (!cond) return;
@@ -1417,6 +1424,7 @@ class Parser {
             if (!cond) return;
             untilCond = this.ctx.op("LNOT", [cond]);
         }
+        if (!untilCond) return;
         this.ctx.doEnd(untilCond);
     }
     whileStmt() {
@@ -1606,8 +1614,8 @@ class Parser {
                     case "DATA": this.dataStmt(); break;
                     case "READ": this.readStmt(); break;
                     case "RESTORE": this.restoreStmt(); break;
-                    case "POKE": // TODO: implement
-                    case "PEEK": this.eatUntilNewline(); break;
+                    // TODO:
+                    case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
                     case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
                     default: return false;
                 }

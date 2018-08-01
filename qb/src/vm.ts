@@ -180,6 +180,9 @@ export enum InstructionID {
     RANDOMIZE, // S
     READ, // S BaseType
     RESTORE, // DP
+    LEN, // S S
+    LCASE, // S S
+    UCASE, // S S
     NOP,
 }
 
@@ -1173,6 +1176,18 @@ export class Execution {
             }
             case InstructionID.RESTORE: {
                 this.readPos = args[0];
+                break;
+            }
+            case InstructionID.LEN: {
+                this.save(args[0], VariableValue.newLong(this.readVal(args[1]).strVal().length));
+                break;
+            }
+            case InstructionID.UCASE: {
+                this.save(args[0], VariableValue.newString(this.readVal(args[1]).strVal().toUpperCase()));
+                break;
+            }
+            case InstructionID.LCASE: {
+                this.save(args[0], VariableValue.newString(this.readVal(args[1]).strVal().toLowerCase()));
                 break;
             }
             case InstructionID.NOP: {

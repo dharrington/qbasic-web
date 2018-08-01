@@ -15,7 +15,7 @@
 // codegen.ts - Generates code for QBasic programs.
 
 import {
-    basicType, Coord, ICtx, kNullVal, kValTrue, Location, Token, Val, ValKind,
+    basicType, Coord, ICtx, kNullVal, kValTrue, Location, MVal, Token, Val, ValKind,
 } from "./parse";
 import {
     BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType,
@@ -129,6 +129,13 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.EXP));
         this.functions.set("TIMER",
             FunctionInfo.builtin(new FunctionType(kDoubleType, []), vm.InstructionID.TIMER));
+        this.functions.set("LEN",
+            FunctionInfo.builtin(new FunctionType(kLongType, [kStringType]), vm.InstructionID.LEN));
+        this.functions.set("UCASE",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.UCASE));
+        this.functions.set("LCASE",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LCASE));
+
         this.functions.set("FRE",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
@@ -284,7 +291,7 @@ export class CodegenCtx implements ICtx {
     }
 
     // Returns a Val that represents a named variable.
-    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val {
+    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val | undefined {
         let name = "";
         let location: Location | undefined;
         if (varName instanceof Token) {
@@ -298,7 +305,7 @@ export class CodegenCtx implements ICtx {
             if (sigil !== BaseType.kNone) {
                 if (existing.baseType() !== sigil) {
                     this.error("duplicate definition", location);
-                    return kNullVal;
+                    return undefined;
                 }
             }
             return existing;
@@ -326,22 +333,29 @@ export class CodegenCtx implements ICtx {
         const v = Val.newConst(id.text, value.type, value.type === kStringType ? value.stringValue : value.numberValue);
         this.constVars.set(id.text, v);
     }
-    index(v: Val, idx: Val[]): Val {
+    index(v: Val, idx: Val[]): MVal {
         if (v.isVar()) {
             if (!idx) {
-                return kNullVal;
+                return undefined;
+            }
+            if (v.argIndex !== undefined) {
+                if (!v.isArrayArg) {
+                    this.error("not an array variable");
+                    return undefined;
+                }
             }
             const dims = v.size ? v.size.length : 1;
-            if (idx.length !== dims) {
+            // Array arguments can be any number of dimentions :-/
+            if (!v.isArrayArg && idx.length !== dims) {
                 this.error("wrong number of dimensions");
-                return kNullVal;
+                return undefined;
             }
             v = v.copy();
             v.index = idx;
             return v;
         }
         this.error("index of this kind not implemented");
-        return kNullVal;
+        return undefined;
     }
 
     indexField(v: Val, idx: Token): Val | undefined {
@@ -407,7 +421,7 @@ export class CodegenCtx implements ICtx {
         this.error("invalid type");
         return a;
     }
-    convert(v: Val, ty: Type): Val {
+    convert(v: Val, ty: Type): MVal {
         if (v.type.equals(ty)) {
             return v;
         } else {
@@ -434,59 +448,68 @@ export class CodegenCtx implements ICtx {
                         return result;
                     }
                 }
-                return kNullVal;
+                return undefined;
             }
             this.error("cannot convert value");
-            return kNullVal;
+            return undefined;
         }
     }
-    pushCompatibleOperands(a: Val, b: Val): Val[] {
+    pushCompatibleOperands(a: Val, b: Val): Val[] | undefined {
         // TODO: This is kind of half-baked, need to ensure operators work like they're supposed to with mixed types.
         const type = this.binaryOpType(a.type, b.type);
-        return [this.convert(a, type), this.convert(b, type)];
+        const aa = this.convert(a, type);
+        const bb = this.convert(b, type);
+        if (aa && bb) return [aa, bb];
+        return undefined;
     }
 
-    op(name: string, O: Val[]): Val {
+    op(name: string, O: Val[]): MVal {
         switch (name) {
             // TODO: ^, EQV, IMP.
             case "CLS": {
                 this.write(vm.InstructionID.CLS);
-                return kNullVal;
+                return undefined;
             }
             case "=": { // equality
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.EQ, r, a, b);
+                this.write(vm.InstructionID.EQ, r, C[0], C[1]);
                 return r;
             }
             case ">=": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.GTE, r, a, b);
+                this.write(vm.InstructionID.GTE, r, C[0], C[1]);
                 return r;
             }
             case "<=": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.LTE, r, a, b);
+                this.write(vm.InstructionID.LTE, r, C[0], C[1]);
                 return r;
             }
             case ">": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.GT, r, a, b);
+                this.write(vm.InstructionID.GT, r, C[0], C[1]);
                 return r;
             }
             case "<": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.LT, r, a, b);
+                this.write(vm.InstructionID.LT, r, C[0], C[1]);
                 return r;
             }
             case "<>": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
-                this.write(vm.InstructionID.NEQ, r, a, b);
+                this.write(vm.InstructionID.NEQ, r, C[0], C[1]);
                 return r;
             }
             case "OR": {
@@ -543,12 +566,13 @@ export class CodegenCtx implements ICtx {
                     printArgs.push(Val.newStringLiteral("\n"));
                 }
                 this.write(vm.InstructionID.PRINT, ...printArgs);
-                return kNullVal;
+                return undefined;
             }
             case "+": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
-                const r = this.newStackValue(a.type);
-                this.write(vm.InstructionID.ADD, r, a, b);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
+                const r = this.newStackValue(C[0].type);
+                this.write(vm.InstructionID.ADD, r, C[0], C[1]);
                 return r;
             }
             case "-": {
@@ -558,33 +582,38 @@ export class CodegenCtx implements ICtx {
                     this.write(vm.InstructionID.NEG, unaryResult, O[0]);
                     return unaryResult;
                 }
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
-                const r = this.newStackValue(a.type);
-                this.write(vm.InstructionID.SUB, r, a, b);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
+                const r = this.newStackValue(C[0].type);
+                this.write(vm.InstructionID.SUB, r, C[0], C[1]);
                 return r;
             }
             case "*": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
-                const r = this.newStackValue(a.type);
-                this.write(vm.InstructionID.MUL, r, a, b);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
+                const r = this.newStackValue(C[0].type);
+                this.write(vm.InstructionID.MUL, r, C[0], C[1]);
                 return r;
             }
             case "/": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kDoubleType);
-                this.write(vm.InstructionID.DIV, r, a, b);
+                this.write(vm.InstructionID.DIV, r, C[0], C[1]);
                 return r;
             }
             case "\\": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kLongType);
-                this.write(vm.InstructionID.IDIV, r, a, b);
+                this.write(vm.InstructionID.IDIV, r, C[0], C[1]);
                 return r;
             }
             case "MOD": {
-                const [a, b] = this.pushCompatibleOperands(O[0], O[1]);
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
                 const r = this.newStackValue(kLongType);
-                this.write(vm.InstructionID.MOD, r, a, b);
+                this.write(vm.InstructionID.MOD, r, C[0], C[1]);
                 return r;
             }
             case "NOT": {
@@ -601,7 +630,7 @@ export class CodegenCtx implements ICtx {
                 this.error("internal: operator not implemented");
             }
         }
-        return kNullVal;
+        return undefined;
     }
 
     declSub(id: Token, args: Val[]) {
@@ -644,6 +673,7 @@ export class CodegenCtx implements ICtx {
             }
             const argVal = Val.newVar(a.varName, a.type, a.size);
             argVal.argIndex = i;
+            if (a.isArrayArg) argVal.isArrayArg = true;
             subCtx.autoVars.set(this.autoVarKey(argVal), argVal);
         }
         sub.startPc = this.program().inst.length;
@@ -772,9 +802,9 @@ export class CodegenCtx implements ICtx {
         this.tempVarCount -= tempArgCount;
     }
 
-    callFunction(id: string, args: Val[]): Val {
+    callFunction(id: string, args: Val[]): MVal {
         const f = this.g.functions.get(id);
-        if (!f) return kNullVal;
+        if (!f) return undefined;
         if (f.builtin && f.builtinOp) {
             const r = this.newStackValue(f.type.resultType);
             this.write(f.builtinOp, r, ...args);
@@ -787,7 +817,7 @@ export class CodegenCtx implements ICtx {
                 }
             }
             this.error("not implemented");
-            return kNullVal;
+            return undefined;
         }
 
         // TODO: check args
@@ -800,7 +830,7 @@ export class CodegenCtx implements ICtx {
         const returnVal = this.newStackValue(f.type.resultType);
 
         for (const arg of args) {
-            if (!arg) return kNullVal;
+            if (!arg) return undefined;
             if (arg.isVar()) {
                 argNames.push(this.varAddr(arg));
             } else {
