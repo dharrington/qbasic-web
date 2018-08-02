@@ -22,7 +22,7 @@ END SELECT
 
 SELECT CASE X$
   CASE "OTHER"
-  CASE "HI"
+  CASE "NOTHI", "HI"
     PRINT "second"
   CASE ELSE
     PRINT "second fail"

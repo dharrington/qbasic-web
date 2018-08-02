@@ -65,6 +65,7 @@ export class Val {
         v.varName = name;
         if (v.type === kStringType) v.stringValue = val as string;
         else v.numberValue = val as number;
+        v.shared = true; // constants are always shared.
         return v;
     }
     static newStackValue(ty: Type, offset: number): Val {
@@ -172,7 +173,7 @@ export interface ICtx {
     data(dataArray: Val[]);
     read(args: Val[]);
     restore(label: number | string);
-    variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined;
+    variable(varName: Token, sigil: BaseType, defaultType?: Type): Val | undefined;
     declConst(id: Token, ty: BaseType, value: Val);
     index(v: Val, idx: Val[]): Val | undefined;
     // x.field
@@ -197,7 +198,7 @@ export interface ICtx {
     elseBegin(cond?: Val);
     ifEnd();
     selectBegin(v: Val);
-    selectCase(v: Val);
+    selectCase(vs: Val[]);
     selectCaseElse();
     selectEnd();
     forBegin(idx: Val, f: Val, t: Val, st: Val);
@@ -530,6 +531,19 @@ class Parser {
     maybeVarname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
         if (this.tok().id !== TokenType.kIdent) return undefined;
         return this.varname(allowIndex);
+    }
+
+    maybeArrayReference(): Val | undefined { // X%()
+        if (this.tok().id !== TokenType.kIdent) return undefined;
+        const oldTokenIndex = this.tokenIndex;
+        const id = this.expectIdent() as Token;
+        const sigil = this.maybeSigil();
+        if (!this.nextIf("(") || !this.nextIf(")")) {
+            this.tokenIndex = oldTokenIndex;
+            return undefined;
+        }
+        // TODO: There is currently no distinction between passing parameters by array or not.
+        return this.ctx.variable(id, sigil, undefined);
     }
 
     varname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
@@ -898,9 +912,13 @@ class Parser {
             block.usedElse = true;
             this.ctx.selectCaseElse();
         } else {
-            const e = this.expr();
-            if (!e) return;
-            this.ctx.selectCase(e);
+            let cases: Val[] = [];
+            do {
+                const next = this.expr();
+                if (!next) return;
+                cases.push(next);
+            } while (this.nextIf(","));
+            this.ctx.selectCase(cases);
         }
     }
     screenStmt() {
@@ -1097,7 +1115,7 @@ class Parser {
                 return args;
             }
             if (this.isEol()) { break; }
-            const e = this.expr();
+            const e = this.maybeArrayReference() || this.expr();
             if (!e) return undefined;
             args.push(e);
             if (wantParen ? this.tok().isOp(")") : this.isEol()) { continue; }

@@ -95,13 +95,13 @@ class GlobalCtx {
     public isEnd = false;
     constructor() {
         this.program.data.push(vm.VariableValue.single(kIntType, 0)); // this slot isn't used, so addr=-1 addresses data[1].
-        this.functions.set("MID$",
+        this.functions.set("MID",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType, kLongType], 1), vm.InstructionID.MID));
-        this.functions.set("RIGHT$",
+        this.functions.set("RIGHT",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType]), vm.InstructionID.RIGHT));
-        this.functions.set("LEFT$",
+        this.functions.set("LEFT",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType]), vm.InstructionID.LEFT));
-        this.functions.set("CHR$",
+        this.functions.set("CHR",
             FunctionInfo.builtin(new FunctionType(kStringType, [kLongType]), vm.InstructionID.CHR));
         this.functions.set("ASC",
             FunctionInfo.builtin(new FunctionType(kIntType, [kStringType]), vm.InstructionID.ASC));
@@ -111,11 +111,11 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.INT));
         this.functions.set("FIX",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.FIX));
-        this.functions.set("INKEY$",
+        this.functions.set("INKEY",
             FunctionInfo.builtin(new FunctionType(kStringType, []), vm.InstructionID.INKEY));
         this.functions.set("VAL",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kStringType]), vm.InstructionID.VAL));
-        this.functions.set("STR$",
+        this.functions.set("STR",
             FunctionInfo.builtin(new FunctionType(kStringType, [kDoubleType]), vm.InstructionID.STR));
         this.functions.set("TAN",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.TAN));
@@ -143,7 +143,6 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.UCASE));
         this.functions.set("LCASE",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LCASE));
-
         this.functions.set("FRE",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
@@ -302,7 +301,8 @@ export class CodegenCtx implements ICtx {
     }
 
     // Returns a Val that represents a named variable.
-    variable(varName: Token | string, sigil: BaseType, defaultType: Type): Val | undefined {
+    // If defaultType is provided, creates variable if it doesn't exist.
+    variable(varName: Token | string, sigil: BaseType, defaultType?: Type): Val | undefined {
         let name = "";
         let location: Location | undefined;
         if (varName instanceof Token) {
@@ -321,6 +321,8 @@ export class CodegenCtx implements ICtx {
             }
             return existing;
         }
+
+        if (defaultType === undefined) return undefined;
         const key = name + baseTypeToSigil(sigil);
         const v = Val.newVar(name, defaultType);
         this.autoVars.set(key, v);
@@ -915,17 +917,23 @@ export class CodegenCtx implements ICtx {
         this.ctrlFlowStack.push(flow);
         flow.selectValue = this.stackify(v, true);
     }
-    selectCase(v: Val) {
+    selectCase(vs: Val[]) {
         const flow = this.ctrlFlow();
         if (!flow) return;
         if (flow.caseInstOffset.length > 0) {
             flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
         }
-        const test = this.newStackValue(kIntType);
         const testpc = this.program().inst.length;
-        this.write(vm.InstructionID.EQ, test, flow.selectValue, v);
+        let testResult = this.op("=", [flow.selectValue, vs[0]]);
+        if (!testResult) return;
+        for (let i = 1; i < vs.length; ++i) {
+            const next = this.op("=", [flow.selectValue, vs[i]]);
+            if (!next || !testResult) return;
+            testResult = this.op("OR", [testResult, next]);
+        }
+
         const branchpc = this.program().inst.length;
-        this.write(vm.InstructionID.BRANCH_IFNOT, 0, test);
+        this.write(vm.InstructionID.BRANCH_IFNOT, 0, testResult);
         flow.caseInstOffset.push([testpc, branchpc]);
     }
     selectCaseElse() {
