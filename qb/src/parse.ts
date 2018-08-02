@@ -196,6 +196,10 @@ export interface ICtx {
     ifBegin(cond: Val);
     elseBegin(cond?: Val);
     ifEnd();
+    selectBegin(v: Val);
+    selectCase(v: Val);
+    selectCaseElse();
+    selectEnd();
     forBegin(idx: Val, f: Val, t: Val, st: Val);
     forExit();
     forEnd();
@@ -220,133 +224,6 @@ export interface ICtx {
     end();
 }
 
-// A minimal implementation of ICtx that can parse code.
-export class NullCtx implements ICtx {
-    private types: Map<string, Type> = new Map<string, Type>();
-    private dimVars: Map<string, Val> = new Map<string, Val>();
-    private autoVars: Map<string, Val> = new Map<string, Val>();
-    private subs: Map<string, Val> = new Map<string, Val>();
-
-    finalize() { }
-    error(message: string, loc: Location) {
-        console.log(message + " at " + loc.toString());
-    }
-    defineType(id: Token, t: Type) {
-        if (this.types.has(id.text)) {
-            this.error("duplicate definition", id.loc);
-            return;
-        }
-        if (!t) return;
-        this.types.set(id.text, t);
-    }
-    typename(tok: Token): Type | undefined {
-        if (tok.text === "INTEGER") { return kIntType; }
-        if (tok.text === "STRING") { return kStringType; }
-        if (tok.text === "DOUBLE") { return kDoubleType; }
-        if (tok.text === "SINGLE") { return kSingleType; }
-        if (tok.text === "LONG") { return kLongType; }
-        return this.types.get(tok.text);
-    }
-    label(tok: Token) { }
-    lineNumber(num: number, tok: Token) { }
-    newline(num: number) { }
-    data(dataArray: Val[]) { }
-    read(args: Val[]) { }
-    restore(label: number | string) { }
-    variable(varName: Token, sigil: BaseType, defaultType: Type): Val | undefined {
-        const dimVar = this.dimVars.get(varName.text);
-        if (dimVar) {
-            if (sigil === BaseType.kNone || dimVar.type.type === sigil) {
-                return dimVar;
-            } else {
-                this.error("duplicate definition", varName.loc);
-                return undefined;
-            }
-        }
-        const key = varName.text + baseTypeToSigil(sigil);
-        const autoVar = this.autoVars.get(key);
-        if (autoVar) return autoVar;
-        const v = Val.newVar(varName.text, defaultType);
-        this.autoVars.set(key, v);
-        return v;
-    }
-    declConst(id: Token, ty: BaseType, value: Val) { }
-    index(v: Val, idx: Val[]): Val | undefined {
-        return v;
-    }
-    indexField(v: Val, idx: Token): Val | undefined {
-        return undefined;
-    }
-    dim(name: Token, size: Val[][], ty: Type, shared: boolean) {
-        if (this.dimVars.has(name.text)) {
-            this.error("duplicate definition", name.loc);
-            return;
-        }
-        for (const suffix of ["$", "%", "&", "!", "#", ""]) {
-            if (this.autoVars.has(name.text + suffix)) {
-                this.error("duplicate definition", name.loc);
-                return;
-            }
-        }
-        // const v = Val.newVar(name.text, ty ? ty : kIntType, size);
-        // this.dimVars.set(name.text, v);
-    }
-
-    op(name: string, operands: Val[]): MVal {
-        console.log("OP " + name + operands);
-        return undefined;
-    }
-    sub(id: Token): ICtx {
-        return this;
-    }
-    subExit() { }
-    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx {
-        return this;
-    }
-    functionExit() { }
-    declArg(id: Token, isArray: boolean, ty: Type | null): Val {
-        return kNullVal;
-    }
-    endSub() { }
-    endFunction() { }
-    declSub(id: Token, args: Val[]) { }
-    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]) { }
-    isSub(id: string): boolean {
-        return this.subs.has(id);
-    }
-    callSub(id: Token, args: Val[]) { }
-    callFunction(id: string, args: Val[]): MVal { return undefined; }
-    lookupFunction(id: string): FunctionType | undefined {
-        return undefined;
-    }
-    input(keepCursor: boolean, prompt: string, args: Val[]) { }
-    ifBegin(cond: Val) { }
-    elseBegin(cond?: Val) { }
-    ifEnd() { }
-    forBegin(idx: Val, f: Val, t: Val, st: Val) { }
-    forExit() { }
-    forEnd() { }
-    doBegin(whileCond: Val) { }
-    doExit() { }
-    doEnd(untilCond: Val) { }
-    whileBegin(whileCond: Val) { }
-    wend() { }
-    gotoLine(no: number, tok: Token) { }
-    gotoLabel(lbl: Token) { }
-    goReturn(token: Token, lbl: number | string | undefined) { }
-    gosub(token: Token, lbl: number | string) { }
-    color(fore: Val, back: Val) { }
-    line(a: Coord, b: Coord, color: Val, option: string, style?: Val) { }
-    pset(a: Coord, color: Val | undefined) { }
-    locate(x?: Val, y?: Val) { }
-    screen(id: Val) { }
-    palette(attr: Val, col: Val) { }
-    sleep(delay?: Val) { }
-    endStmt() { }
-    randomize(seed: Val) { }
-    end() { }
-}
-
 export function parse(ctx: ICtx, tokens: Token[]) {
     const parser = new Parser(ctx, tokens);
     parser.program();
@@ -355,6 +232,7 @@ export function parse(ctx: ICtx, tokens: Token[]) {
 // An active block (IF, FOR, WHILE, ...).
 class Block {
     public forLabel: string;
+    public usedElse = false;
     constructor(public beginToken: Token, public kind: string) { }
 }
 
@@ -998,6 +876,33 @@ class Parser {
         }
         --this.controlNesting;
     }
+    selectStmt() {
+        const beginTok = this.expectIdent("SELECT");
+        const v = beginTok && this.expectIdent("CASE") && this.expr();
+        if (!v) return;
+        this.openBlocks.push(new Block(beginTok as Token, "SELECT"));
+        this.ctx.selectBegin(v);
+    }
+    caseStmt() {
+        this.expectIdent("CASE");
+        const block = this.currentBlock();
+        if (!block || block.kind !== "SELECT") {
+            this.error("CASE without SELECT");
+            return;
+        }
+        if (block.usedElse) {
+            this.error("CASE ELSE must be last");
+            return;
+        }
+        if (this.nextIf("ELSE")) {
+            block.usedElse = true;
+            this.ctx.selectCaseElse();
+        } else {
+            const e = this.expr();
+            if (!e) return;
+            this.ctx.selectCase(e);
+        }
+    }
     screenStmt() {
         this.expectIdent("SCREEN");
         const id = this.numericExpr();
@@ -1562,7 +1467,17 @@ class Parser {
     }
     endStmt() {
         this.expectIdent("END");
-        this.ctx.end();
+        if (this.nextIf("SELECT")) {
+            const block = this.currentBlock();
+            if (!block || block.kind !== "SELECT") {
+                this.error("END SELECT without SELECT");
+                return;
+            }
+            this.ctx.selectEnd();
+            this.openBlocks.pop();
+        } else {
+            this.ctx.end();
+        }
     }
     statement(moduleLevel: boolean, allowHardNewline: boolean = true): boolean {
         if (this.isEof()) { return false; }
@@ -1585,6 +1500,8 @@ class Parser {
                     case "DEFSNG":
                     case "DEFLNG":
                     case "DEFDBL": this.defABCStmt(); break;
+                    case "SELECT": this.selectStmt(); break;
+                    case "CASE": this.caseStmt(); break;
                     case "GOSUB": this.gosubStmt(); break;
                     case "RETURN": this.returnStmt(); break;
                     case "FOR": this.forStmt(); break;

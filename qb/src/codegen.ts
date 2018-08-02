@@ -28,11 +28,19 @@ enum CtrlFlowType {
     kFOR,
     kDO,
     kWHILE,
+    kSELECT,
 }
 class CtrlFlow {
     public branchInst?: vm.Instruction;
     public endInstructions: vm.Instruction[] = [];
     public loopStart: number;
+    selectValue: Val;
+    // SELECT CASE is implemented as a chain of conditionals.
+    // For each case, stores two instruction offsets. First is the place to jump to to start the case.
+    // Second is the branch instruction that skips over the case when the test fails.
+    caseInstOffset: number[][] = [];
+    endCaseInstructions: vm.Instruction[] = [];
+
     constructor(public type: CtrlFlowType) { }
 }
 class GotoInfo {
@@ -179,6 +187,9 @@ export class CodegenCtx implements ICtx {
     private subInfo?: SubroutineInfo;
     private fnInfo?: FunctionInfo;
     private stackOffset: number = 0;
+    // Some stack slots can be reserved for use across multiple statements.
+    // We assume the other stack slots can be freed at the start of a statement.
+    private reservedStackSlots: number = 0;
     private ctrlFlowStack: CtrlFlow[] = [];
     private tempVarCount = 0;
 
@@ -262,7 +273,7 @@ export class CodegenCtx implements ICtx {
     endStmt() {
         // It's not possible for a stack variable to be referenced in more than one statement, so we can
         // reuse the stack offsets after each statement.
-        this.stackOffset = 0;
+        this.stackOffset = this.reservedStackSlots;
     }
 
     findVariable(name: string, sigil: BaseType): Val | undefined {
@@ -899,6 +910,55 @@ export class CodegenCtx implements ICtx {
         }
         this.ctrlFlowStack.pop();
     }
+    selectBegin(v: Val) {
+        const flow = new CtrlFlow(CtrlFlowType.kSELECT);
+        this.ctrlFlowStack.push(flow);
+        flow.selectValue = this.stackify(v, true);
+    }
+    selectCase(v: Val) {
+        const flow = this.ctrlFlow();
+        if (!flow) return;
+        if (flow.caseInstOffset.length > 0) {
+            flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
+        }
+        const test = this.newStackValue(kIntType);
+        const testpc = this.program().inst.length;
+        this.write(vm.InstructionID.EQ, test, flow.selectValue, v);
+        const branchpc = this.program().inst.length;
+        this.write(vm.InstructionID.BRANCH_IFNOT, 0, test);
+        flow.caseInstOffset.push([testpc, branchpc]);
+    }
+    selectCaseElse() {
+        const flow = this.ctrlFlow();
+        if (!flow) return;
+        flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
+        const offset = this.program().inst.length;
+        this.emit(vm.InstructionID.NOP);
+        flow.caseInstOffset.push([offset, -1]);
+    }
+    selectEnd() {
+        const flow = this.ctrlFlow();
+        if (!flow) return;
+        const endPos = this.program().inst.length;
+        for (const inst of flow.endCaseInstructions) {
+            inst.args[0] = endPos;
+        }
+        for (let i = 0; i < flow.caseInstOffset.length; ++i) {
+            const [testOffset, branchOffset] = flow.caseInstOffset[i];
+            if (branchOffset >= 0) {
+                const branch = this.program().inst[branchOffset];
+                if (i + 1 < flow.caseInstOffset.length) {
+                    branch.args[0] = flow.caseInstOffset[i + 1][0];
+                } else {
+                    branch.args[0] = endPos;
+                }
+            }
+        }
+        this.ctrlFlowStack.pop();
+        if (flow.selectValue.stackOffset >= 0) {
+            this.reservedStackSlots--;
+        }
+    }
     forBegin(idx: Val, from: Val, to: Val, step: Val | null) {
         if (!idx.isVar() || !idx.type.isNumeric()) {
             this.error("invalid index");
@@ -1214,6 +1274,13 @@ export class CodegenCtx implements ICtx {
         }
         return undefined;
     }
+    private reserveStackSlot(): number {
+        if (this.stackOffset !== this.reservedStackSlots) {
+            this.error("internal error");
+            return 0;
+        }
+        return this.reservedStackSlots++;
+    }
     private nextStackOffset(): number {
         return this.stackOffset++;
     }
@@ -1290,7 +1357,7 @@ export class CodegenCtx implements ICtx {
         return undefined;
     }
     // Convert v to a value that is on the stack.
-    private stackify(v?: Val): Val {
+    private stackify(v: Val | undefined, reservedSlot = false): Val {
         if (!v) return kNullVal;
         const constVal = this.constDataVal(v);
         if (constVal !== undefined) {
@@ -1298,7 +1365,7 @@ export class CodegenCtx implements ICtx {
         }
         if (v.isStackValue()) return v;
         if (v.isVar() || v.isField()) {
-            return this.loadVar(this.nextStackOffset(), v) || kNullVal;
+            return this.loadVar(reservedSlot ? this.reserveStackSlot() : this.nextStackOffset(), v) || kNullVal;
         }
         this.error("invalid value");
         return kNullVal;
