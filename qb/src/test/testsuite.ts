@@ -62,6 +62,13 @@ function testCases(caseDir = process.argv[2]) {
 function visualizeWhitespace(output: string): string {
     return output.replace(/ /g, String.fromCharCode(183));
 }
+function addLineNumbersToSource(source: string): string {
+    const lines = source.split("\n");
+    for (let i = 0; i < lines.length; ++i) {
+        lines[i] = (i + 1).toString() + "\t" + lines[i];
+    }
+    return lines.join("\n");
+}
 function runSuccess(program: string, exp: Expectation) {
     const stepQuota = 10000;
 
@@ -71,7 +78,7 @@ function runSuccess(program: string, exp: Expectation) {
     const pc = new DebugPC();
     const exe = new vm.Execution(ctx.program(), pc);
     if (ctx.errors().length > 0) {
-        console.log(`Compile errors in program:\n${program}\n----\n`);
+        console.log(`Compile errors in program:\n${addLineNumbersToSource(program)}\n----\n`);
         for (const e of ctx.errors()) {
             console.log(`  ${e}`);
         }
@@ -105,7 +112,7 @@ function runSuccess(program: string, exp: Expectation) {
     }
     failCount++;
     console.log(`Output for program:
-${program}
+${addLineNumbersToSource(program)}
 -------------------------------------------------------------------------------
 Got:
 -------------------------------------------------------------------------------

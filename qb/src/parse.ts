@@ -245,7 +245,6 @@ export const kValZero = Val.newNumberLiteral(0, kIntType);
 // Parses QBasic code, relays information to ctx.
 class Parser {
     private tokenIndex = 0;
-    private controlNesting = 0;
     private isEnd = false;
     private openBlocks: Block[] = [];
     // DEFINT etc... map from first letter to base type.
@@ -733,6 +732,10 @@ class Parser {
     }
     printStmt() {
         if (this.nextIf("PRINT")) { } else this.expectOp("?");
+        if (this.nextIf("USING")) {            // TODO:
+            this.eatUntilNewline();
+            return;
+        }
         const vals: Val[] = [];
         while (!this.isEol()) {
             const v = this.expr();
@@ -824,6 +827,7 @@ class Parser {
         this.expectOp(")");
         return args;
     }
+
     ifStmt() {
         // TODO: IF <numeric-expr> GOTO line
         const ifTok = this.expectIdent("IF");
@@ -840,18 +844,25 @@ class Parser {
             return;
         }
         block.singleLine = true;
-        if (!this.tok().isIdent("ELSE") && !this.tok().isIdent("ELSEIF")) {
-            this.statement();
-        }
+        const readSomeStatements = () => {
+            while (1) {
+                if (!this.tok().isIdent("ELSE") && !this.tok().isIdent("ELSEIF")) {
+                    this.statement();
+                    if (this.nextIf(":")) continue;
+                    break;
+                } else {
+                    break;
+                }
+            }
+        };
+        readSomeStatements();
         while (1) {
             if (this.tok().isIdent("ELSE")) {
                 this.elseStmt();
-                this.statement();
+                readSomeStatements();
             } else if (this.tok().isIdent("ELSEIF")) {
                 this.elseIfStmt();
-                if (!this.tok().isIdent("ELSE") && !this.tok().isIdent("ELSEIF")) {
-                    this.statement();
-                }
+                readSomeStatements();
             } else if (this.tok().isNewline()) {
                 break;
             } else {
@@ -1558,8 +1569,10 @@ class Parser {
             const moduleLevel = this.isModuleLevel();
 
             if (this.isEnd && moduleLevel) {
-                this.error("expected SUB or EOF");
-                return false;
+                if (this.tok().text != "SUB" && this.tok().text != "FUNCTION") {
+                    this.error("expected SUB, FUNCTION, or EOF");
+                    return false;
+                }
             }
             let handled = true;
             switch (this.tok().text) {
@@ -1642,12 +1655,9 @@ class Parser {
 // I need to either implement, or decide to not implement the following:
 
 // Basic language constructs
-// DATA Statement
-// DECLARE FUNCTION
 // DEF FN Statement
 // DEFtype Statements - Set the default data type for variables, DEF FN functions, and FUNCTION procedures
 // DIM SHARED
-// END -- end program?
 // ERASE Statement
 // ERROR Statement - raise errors
 // EXIT Statement
