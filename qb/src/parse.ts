@@ -234,6 +234,8 @@ export function parse(ctx: ICtx, tokens: Token[]) {
 class Block {
     public forLabel: string;
     public usedElse = false;
+    public singleLine = false;
+
     constructor(public beginToken: Token, public kind: string) { }
 }
 
@@ -248,6 +250,7 @@ class Parser {
     private openBlocks: Block[] = [];
     // DEFINT etc... map from first letter to base type.
     private defaultVarTypes = new Map<string, Type>();
+    private moduleCtx: ICtx = this.ctx;
     constructor(private ctx: ICtx, private tokens: Token[]) {
     }
     defaultType(varName: string, sigil?: BaseType): Type {
@@ -255,6 +258,17 @@ class Parser {
     }
     currentBlock(): Block | undefined {
         return this.openBlocks.length ? this.openBlocks[this.openBlocks.length - 1] : undefined;
+    }
+    findBlock(kind: string): Block | undefined {
+        for (let i = this.openBlocks.length - 1; i >= 0; i--) {
+            const b = this.openBlocks[i];;
+            if (b.kind === kind) { return this.openBlocks[i]; }
+        }
+        return undefined;
+    }
+    singleLineBlock(): boolean {
+        const b = this.currentBlock();
+        return b !== undefined && b.singleLine;
     }
     tok(offset: number = 0): Token {
         if (offset + this.tokenIndex >= this.tokens.length) {
@@ -278,21 +292,21 @@ class Parser {
         return undefined;
     }
 
-    expectNewline(allowHardNewline: boolean = true): boolean {
+    expectNewline() {
         const t = this.tok();
         if (t.isOp(":") || t.id === TokenType.kNewline) {
             if (t.id === TokenType.kNewline) {
-                if (!allowHardNewline) {
-                    this.error("newline before END...");
+                if (this.singleLineBlock()) {
+                    this.error("newline before END");
                 }
                 this.ctx.newline(this.tok().loc.line + 1);
             }
             this.next();
-            return true;
+            return;
         }
-        if (this.isEof()) return true;
+        if (this.isEof()) return;
         this.error("expected newline");
-        return false;
+        return;
     }
 
     eatNewlines() {
@@ -480,8 +494,13 @@ class Parser {
         }
         return v;
     }
+    isModuleLevel(): boolean {
+        return this.moduleCtx === this.ctx;
+    }
     expectModuleLevel() {
-
+        if (!this.isModuleLevel()) {
+            this.error("not in module level");
+        }
     }
     dataStmt() { // DATA [value, ...]
         this.expectIdent("DATA");
@@ -805,90 +824,78 @@ class Parser {
         this.expectOp(")");
         return args;
     }
-
-    ifStmt(moduleLevel: boolean, allowHardNewline: boolean) {
+    ifStmt() {
         // TODO: IF <numeric-expr> GOTO line
-        this.expectIdent("IF");
-        const nesting = ++this.controlNesting; // TODO: probably not necessary
+        const ifTok = this.expectIdent("IF");
+        if (!ifTok) return;
         const cond = this.expr();
         if (!cond) return;
-        let hitElse = false;
-        let singleLine = false;
-        if (this.nextIf("THEN")) {
-            if (this.tok().isNewline()) {
-                if (!allowHardNewline) {
-                    this.error("newline before END...");
-                    --this.controlNesting;
-                    return true;
+        const wasSingleLine = this.singleLineBlock();
+        const block = new Block(ifTok, "IF");
+        block.singleLine = wasSingleLine;
+        this.openBlocks.push(block);
+        if (!this.expectIdent("THEN")) return;
+        this.ctx.ifBegin(cond);
+        if (!block.singleLine && this.tok().isNewlineOrColon()) {
+            return;
+        }
+        block.singleLine = true;
+        if (!this.tok().isIdent("ELSE") && !this.tok().isIdent("ELSEIF")) {
+            this.statement();
+        }
+        while (1) {
+            if (this.tok().isIdent("ELSE")) {
+                this.elseStmt();
+                this.statement();
+            } else if (this.tok().isIdent("ELSEIF")) {
+                this.elseIfStmt();
+                if (!this.tok().isIdent("ELSE") && !this.tok().isIdent("ELSEIF")) {
+                    this.statement();
                 }
-            }
-            singleLine = !allowHardNewline || !this.tok().isNewlineOrColon();
-            if (!singleLine) {
-                this.expectNewline(); // TODO: handle single-line statements
-            }
-
-            this.ctx.ifBegin(cond);
-            // TODO: Probably want to remove statement parsing from this function.
-            let stmtCount = 0;
-            while (true) {
-                if (nesting === this.controlNesting) {
-                    if (!singleLine && this.tok().isIdent("END") && this.tok(1).isIdent("IF")) {
-                        this.next(2);
-                        this.ctx.ifEnd();
-                        break;
-                    }
-                    if (singleLine && this.tok().isNewline()) {
-                        this.ctx.ifEnd();
-                        break;
-                    }
-                    if (!hitElse && this.nextIf("ELSEIF")) {
-                        stmtCount = 0;
-                        this.ctx.elseBegin(this.expr());
-                        this.expectIdent("THEN");
-                        if (!singleLine) {
-                            if (!this.tok().isNewlineOrColon()) {
-                                singleLine = true;
-                            } else {
-                                this.expectNewline();
-                            }
-                        }
-                        continue;
-                    }
-                    if (!hitElse && this.nextIf("ELSE")) {
-                        stmtCount = 0;
-                        if (!singleLine) {
-                            if (!this.tok().isNewlineOrColon()) {
-                                singleLine = true;
-                            } else {
-                                this.expectNewline();
-                            }
-                        }
-                        hitElse = true;
-                        this.ctx.elseBegin();
-                        continue;
-                    }
-                }
-                if (this.isEof()) {
-                    this.ctx.ifEnd();
-                    break;
-                }
-
-                if (singleLine) {
-                    if (stmtCount > 0) {
-                        this.expectOp(":");
-                    }
-                    if (!this.statement(moduleLevel, singleLine)) {
-                        this.error("expected statement");
-                        break;
-                    }
-                    stmtCount++;
-                } else {
-                    this.eatNewlines();
-                    this.statementAndNewline(moduleLevel);
-                }
+            } else if (this.tok().isNewline()) {
+                break;
+            } else {
+                this.error("expected ELSE, ELSEIF, or newline");
+                break;
             }
         }
-        --this.controlNesting;
+        if (this.currentBlock() !== block) {
+            this.error("cannot open block within single line if-statement");
+            return;
+        }
+        this.openBlocks.pop();
+        this.ctx.ifEnd();
+    }
+    elseStmt() {
+        const elseTok = this.expectIdent("ELSE");
+        if (!elseTok) return;
+        const block = this.currentBlock();
+        if (!block || block.kind !== "IF") {
+            this.error("ELSE without IF", elseTok.loc);
+            return;
+        }
+        if (block.usedElse) {
+            this.error("ELSE after ELSE", elseTok.loc);
+            return;
+        }
+        this.ctx.elseBegin();
+    }
+    elseIfStmt() {
+        const elseifTok = this.expectIdent("ELSEIF");
+        if (!elseifTok) return;
+        const block = this.currentBlock();
+        if (!block || block.kind !== "IF") {
+            this.error("ELSEIF without IF", elseifTok.loc);
+            return;
+        }
+        if (block.usedElse) {
+            this.error("ELSEIF after ELSE", elseifTok.loc);
+            return;
+        }
+        const cond = this.expr();
+        if (!cond) return;
+        this.expectIdent("THEN");
+        this.ctx.elseBegin(cond);
     }
     selectStmt() {
         const beginTok = this.expectIdent("SELECT");
@@ -1008,53 +1015,32 @@ class Parser {
     }
     subStmt() { // SUB <name> [(<args>)] ... END SUB
         const begin = this.expectIdent("SUB");
-        if (!begin) { return false; }
+        if (!begin) { return; }
+        this.expectModuleLevel();
         this.isEnd = true;
         const id = this.expectIdent();
-        if (!id) { return true; }
-        const moduleCtx = this.ctx;
+        if (!id) { return; }
         const subCtx = this.ctx.sub(id, this.declArgs());
         this.ctx = subCtx;
         this.nextIf("STATIC"); // TODO: Ignore for now
-        this.expectNewline();
-        while (!this.isEof()) {
-            this.eatNewlines();
-            if (this.tok().isIdent("END") && this.tok(1).isIdent("SUB")) {
-                this.next(2);
-                break;
-            }
-            this.statementAndNewline(false);
-        }
-        this.ctx.endSub();
-        this.ctx = moduleCtx;
-        return true;
+        this.openBlocks.push(new Block(begin, "SUB"));
     }
     functionStmt() {
         const begin = this.expectIdent("FUNCTION");
-        if (!begin) { return false; }
+        if (!begin) { return; }
+        this.expectModuleLevel();
         this.isEnd = true;
         const id = this.expectIdent();
-        if (!id) { return true; }
-        const moduleCtx = this.ctx;
+        if (!id) { return; }
         const sig = this.maybeSigil();
         const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs());
         this.ctx = subCtx;
-        this.expectNewline();
-        while (!this.isEof()) {
-            this.eatNewlines();
-            if (this.tok().isIdent("END") && this.tok(1).isIdent("FUNCTION")) {
-                this.next(2);
-                break;
-            }
-            this.statementAndNewline(false);
-        }
-        this.ctx.endFunction();
-        this.ctx = moduleCtx;
-        return true;
+        this.openBlocks.push(new Block(begin, "FUNCTION"));
     }
 
     declareStmt() { // DECLARE SUB <name> (<args>)
         this.expectIdent("DECLARE");
+        this.expectModuleLevel();
         if (this.nextIf("SUB")) {
             const id = this.expectIdent();
             if (!id) { return; }
@@ -1375,14 +1361,43 @@ class Parser {
             this.error("EXIT without FOR, DO, or SUB");
             return;
         }
-        switch (block.kind) {
-            case "FOR": this.expectIdent("FOR"); this.ctx.forExit(); break;
-            case "DO": this.expectIdent("DO"); this.ctx.doExit(); break;
-            case "SUB": this.expectIdent("SUB"); this.ctx.subExit(); break;
-            case "FUNCTION": this.expectIdent("FUNCTION"); this.ctx.functionExit(); break;
-            default:
-                this.error("expected FOR, DO, or SUB");
+        switch (this.tok().text) {
+            case "FOR": {
+                this.expectIdent("FOR");
+                if (!this.findBlock("FOR")) {
+                    this.error("EXIT FOR without FOR");
+                    break;
+                }
+                this.ctx.forExit();
                 break;
+            }
+            case "DO": {
+                this.expectIdent("DO");
+                if (!this.findBlock("DO")) {
+                    this.error("EXIT DO without DO");
+                    break;
+                }
+                this.ctx.doExit();
+                break;
+            }
+            case "SUB": {
+                this.expectIdent("SUB");
+                if (!this.findBlock("SUB")) {
+                    this.error("EXIT SUB without SUB");
+                    break;
+                }
+                this.ctx.subExit();
+                break;
+            }
+            case "FUNCTION": {
+                this.expectIdent("FUNCTION");
+                if (!this.findBlock("FUNCTION")) {
+                    this.error("EXIT FUNCTION without FUNCTION");
+                    break;
+                }
+                this.ctx.functionExit();
+                break;
+            }
         }
     }
     coord(): Coord | undefined {
@@ -1485,77 +1500,113 @@ class Parser {
     }
     endStmt() {
         this.expectIdent("END");
-        if (this.nextIf("SELECT")) {
-            const block = this.currentBlock();
-            if (!block || block.kind !== "SELECT") {
-                this.error("END SELECT without SELECT");
-                return;
+        switch (this.tok().text) {
+            case "SUB": {
+                this.next();
+                const block = this.currentBlock();
+                if (!block || block.kind !== "SUB") {
+                    this.error("END SUB without SUB");
+                    return;
+                }
+                this.ctx.endSub();
+                this.ctx = this.moduleCtx;
+                this.openBlocks.pop();
+                break;
             }
-            this.ctx.selectEnd();
-            this.openBlocks.pop();
-        } else {
-            this.ctx.end();
+            case "FUNCTION": {
+                this.next();
+                const block = this.currentBlock();
+                if (!block || block.kind !== "FUNCTION") {
+                    this.error("END FUNCTION without FUNCTION");
+                    return;
+                }
+                this.ctx.endFunction();
+                this.ctx = this.moduleCtx;
+                this.openBlocks.pop();
+                break;
+            }
+            case "IF": {
+                this.next();
+                const block = this.currentBlock();
+                if (!block || block.kind !== "IF") {
+                    this.error("END IF without IF");
+                    return;
+                }
+                this.ctx.ifEnd();
+                this.openBlocks.pop();
+                break;
+            }
+            case "SELECT": {
+                this.next();
+                const block = this.currentBlock();
+                if (!block || block.kind !== "SELECT") {
+                    this.error("END SELECT without SELECT");
+                    return;
+                }
+                this.ctx.selectEnd();
+                this.openBlocks.pop();
+                break;
+            }
+            default:
+                this.ctx.end();
         }
     }
-    statement(moduleLevel: boolean, allowHardNewline: boolean = true): boolean {
+    statement(): boolean {
         if (this.isEof()) { return false; }
-        const hasLabels = this.maybeLabels();
+        const hasLabels = !this.singleLineBlock() && this.maybeLabels();
         while (1) {
+            const moduleLevel = this.isModuleLevel();
 
-            if (moduleLevel && this.tok().text === "DECLARE") { this.declareStmt(); break; }
-            if (moduleLevel && this.tok().text === "SUB") { this.subStmt(); break; }
-            if (moduleLevel && this.tok().text === "FUNCTION") { this.functionStmt(); break; }
             if (this.isEnd && moduleLevel) {
                 this.error("expected SUB or EOF");
                 return false;
             }
-            const handled = ((): boolean => {
-                switch (this.tok().text) {
-                    case "IF": this.ifStmt(moduleLevel, allowHardNewline); break;
-                    case "SCREEN": this.screenStmt(); break;
-                    case "DEFINT":
-                    case "DEFSTR":
-                    case "DEFSNG":
-                    case "DEFLNG":
-                    case "DEFDBL": this.defABCStmt(); break;
-                    case "SELECT": this.selectStmt(); break;
-                    case "CASE": this.caseStmt(); break;
-                    case "GOSUB": this.gosubStmt(); break;
-                    case "RETURN": this.returnStmt(); break;
-                    case "FOR": this.forStmt(); break;
-                    case "NEXT": this.nextStmt(); break;
-                    case "EXIT": this.exitStmt(); break;
-                    case "COLOR": this.colorStmt(); break;
-                    case "PRINT": case "?": this.printStmt(); break;
-                    case "LINE": this.lineStmt(); break;
-                    case "GOTO": this.gotoStmt(); break;
-                    case "LOCATE": this.locateStmt(); break;
-                    case "PALETTE": this.paletteStmt(); break;
-                    case "SLEEP": this.sleepStmt(); break;
-                    case "DIM": this.dimStmt(); break;
-                    case "INPUT": this.inputStmt(); break;
-                    case "CLS": this.clsStmt(); break;
-                    case "CIRCLE": this.circleStmt(); break;
-                    case "PAINT": this.paintStmt(); break;
-                    case "PSET": this.psetStmt(); break;
-                    case "DO": this.doStmt(); break;
-                    case "TYPE": this.typeStmt(); break;
-                    case "LOOP": this.loopStmt(); break;
-                    case "WHILE": this.whileStmt(); break;
-                    case "WEND": this.wendStmt(); break;
-                    case "CONST": this.constStmt(); break;
-                    case "RANDOMIZE": this.randomizeStmt(); break;
-                    case "END": this.endStmt(); break;
-                    case "DATA": this.dataStmt(); break;
-                    case "READ": this.readStmt(); break;
-                    case "RESTORE": this.restoreStmt(); break;
-                    // TODO:
-                    case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
-                    case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
-                    default: return false;
-                }
-                return true;
-            })();
+            let handled = true;
+            switch (this.tok().text) {
+                case "DECLARE": this.declareStmt(); break;
+                case "SUB": this.subStmt(); break;
+                case "FUNCTION": this.functionStmt(); break;
+                case "IF": this.ifStmt(); break;
+                case "ELSE": this.elseStmt(); break;
+                case "ELSEIF": this.elseIfStmt(); break;
+                case "SCREEN": this.screenStmt(); break;
+                case "DEFINT": case "DEFSTR": case "DEFSNG": case "DEFLNG": case "DEFDBL": this.defABCStmt(); break;
+                case "SELECT": this.selectStmt(); break;
+                case "CASE": this.caseStmt(); break;
+                case "GOSUB": this.gosubStmt(); break;
+                case "RETURN": this.returnStmt(); break;
+                case "FOR": this.forStmt(); break;
+                case "NEXT": this.nextStmt(); break;
+                case "EXIT": this.exitStmt(); break;
+                case "COLOR": this.colorStmt(); break;
+                case "PRINT": case "?": this.printStmt(); break;
+                case "LINE": this.lineStmt(); break;
+                case "GOTO": this.gotoStmt(); break;
+                case "LOCATE": this.locateStmt(); break;
+                case "PALETTE": this.paletteStmt(); break;
+                case "SLEEP": this.sleepStmt(); break;
+                case "DIM": this.dimStmt(); break;
+                case "INPUT": this.inputStmt(); break;
+                case "CLS": this.clsStmt(); break;
+                case "CIRCLE": this.circleStmt(); break;
+                case "PAINT": this.paintStmt(); break;
+                case "PSET": this.psetStmt(); break;
+                case "DO": this.doStmt(); break;
+                case "TYPE": this.typeStmt(); break;
+                case "LOOP": this.loopStmt(); break;
+                case "WHILE": this.whileStmt(); break;
+                case "WEND": this.wendStmt(); break;
+                case "CONST": this.constStmt(); break;
+                case "RANDOMIZE": this.randomizeStmt(); break;
+                case "END": this.endStmt(); break;
+                case "DATA": this.dataStmt(); break;
+                case "READ": this.readStmt(); break;
+                case "RESTORE": this.restoreStmt(); break;
+                // TODO:
+                case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
+                case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
+                default: handled = false;
+            }
             if (handled) { break; }
             if (this.maybeCallSubStmt()) { break; }
             if (this.letStmt()) { break; }
@@ -1567,18 +1618,18 @@ class Parser {
         this.ctx.endStmt();
         return true;
     }
-    statementAndNewline(moduleLevel: boolean, allowHardNewline: boolean = true) {
-        if (!this.statement(moduleLevel, allowHardNewline)) {
+    statementAndNewline() {
+        if (!this.statement()) {
             this.eatUntilNewline();
             this.next();
             return;
         }
-        this.expectNewline(allowHardNewline);
+        this.expectNewline();
     }
     program() {
         while (!this.isEof()) {
             this.eatNewlines();
-            this.statementAndNewline(true);
+            this.statementAndNewline();
         }
         if (this.openBlocks.length) {
             const block = this.openBlocks[this.openBlocks.length - 1];
