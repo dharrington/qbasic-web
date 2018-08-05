@@ -15,7 +15,7 @@
 // codegen.ts - Generates code for QBasic programs.
 
 import {
-    basicType, Coord, ICtx, kNullVal, kValTrue, Location, MVal, Token, Val, ValKind,
+    basicType, Coord, ICtx, ILocator, kNullVal, kValTrue, Location, MVal, Token, Val, ValKind,
 } from "./parse";
 import {
     BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType,
@@ -52,10 +52,15 @@ class GotoInfo {
 
 class SubroutineInfo {
     public calls: vm.Instruction[] = [];
-    constructor(public name: string, public args: Val[], public startPc: number) {
+    public blockInfo = new BlockInfo();
+    constructor(public name: string, public args: Val[]) {
     }
 }
 
+class BlockInfo {
+    public startPc: number = -1;
+    public declareInstructions: vm.Instruction[] = [];
+}
 class FunctionInfo {
     // Many built-in functions are simply passing stack indexes to op-codes.
     // This creates a new FunctionInfo for that case.
@@ -66,8 +71,8 @@ class FunctionInfo {
     }
     public name: string;
     public calls: vm.Instruction[] = [];
-    public startPc?: number;
     public builtinOp?: vm.InstructionID;
+    public blockInfo = new BlockInfo();
     constructor(public type: FunctionType, public builtin: boolean) { }
 }
 class DataStmtOffset {
@@ -91,6 +96,7 @@ class GlobalCtx {
     public restores: RestoreInfo[] = [];
     public currentLine = 0;
     public dataOffsets: DataStmtOffset[] = [];
+    public locator?: ILocator;
     // Has the END instruction been written?
     public isEnd = false;
     constructor() {
@@ -143,6 +149,11 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.UCASE));
         this.functions.set("LCASE",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LCASE));
+        this.functions.set("SPACE",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kIntType]), vm.InstructionID.SPACE));
+        this.functions.set("PEEK",
+            FunctionInfo.builtin(new FunctionType(kIntType, [kIntType]), vm.InstructionID.NOP));
+
         this.functions.set("FRE",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
@@ -186,13 +197,20 @@ export class CodegenCtx implements ICtx {
     private subInfo?: SubroutineInfo;
     private fnInfo?: FunctionInfo;
     private stackOffset: number = 0;
+    private blockInfo = new BlockInfo();
     // Some stack slots can be reserved for use across multiple statements.
     // We assume the other stack slots can be freed at the start of a statement.
     private reservedStackSlots: number = 0;
     private ctrlFlowStack: CtrlFlow[] = [];
     private tempVarCount = 0;
+    private finalized: boolean = false;
 
-    constructor() { }
+    constructor() {
+        this.blockInfo.startPc = 0;
+    }
+    setLocator(locator: ILocator) {
+        this.g.locator = locator;
+    }
     program(): vm.Program { return this.g.program; }
     errors(): string[] { return this.g.errors; }
     errorLocations(): Location[] { return this.g.errorLocations; }
@@ -329,7 +347,7 @@ export class CodegenCtx implements ICtx {
 
         // Write declaration instruction.
         const varVal = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
-        this.write(vm.InstructionID.DECLARE_VAR, key, varVal);
+        this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [key, varVal]));
         return v;
     }
     declConst(id: Token, ty: BaseType, value: Val) {
@@ -416,7 +434,7 @@ export class CodegenCtx implements ICtx {
         this.dimVars.set(name.text, v);
         const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
         vv.dims = numericSize;
-        this.write(vm.InstructionID.DECLARE_VAR, name.text, vv);
+        this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [name.text, vv]));
     }
 
     binaryOpType(a: Type, b: Type): Type {
@@ -647,7 +665,7 @@ export class CodegenCtx implements ICtx {
     }
 
     declSub(id: Token, args: Val[]) {
-        this.g.subs.set(id.text, new SubroutineInfo(id.text, args, -1));
+        this.g.subs.set(id.text, new SubroutineInfo(id.text, args));
     }
     declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]) {
         const argTypes = args.map((a) => a.type);
@@ -669,7 +687,7 @@ export class CodegenCtx implements ICtx {
         if (!sub) {
             this.declSub(id, args);
             sub = this.g.subs.get(id.text) as SubroutineInfo;
-        } else if (sub.startPc >= 0) {
+        } else if (sub.blockInfo.startPc >= 0) {
             this.error("duplicate subroutine name", id.loc);
             return this;
         }
@@ -687,12 +705,18 @@ export class CodegenCtx implements ICtx {
             const argVal = Val.newVar(a.varName, a.type, a.size);
             argVal.argIndex = i;
             if (a.isArrayArg) argVal.isArrayArg = true;
-            subCtx.autoVars.set(this.autoVarKey(argVal), argVal);
+            if (a.dimmed) {
+                argVal.dimmed = true;
+                subCtx.dimVars.set(argVal.varName, argVal);
+            } else {
+                subCtx.autoVars.set(this.autoVarKey(argVal), argVal);
+            }
         }
-        sub.startPc = this.program().inst.length;
+        sub.blockInfo.startPc = this.program().inst.length;
         subCtx.g = this.g;
         subCtx.parent = this;
         subCtx.subInfo = sub;
+        subCtx.blockInfo = sub.blockInfo;
         return subCtx;
     }
 
@@ -710,7 +734,7 @@ export class CodegenCtx implements ICtx {
         if (!fn) {
             this.declFunction(id, sigil, returnType, args);
             fn = this.g.functions.get(id.text) as FunctionInfo;
-        } else if (fn.startPc !== undefined) {
+        } else if (fn.blockInfo.startPc >= 0) {
             this.error("function already defined");
             return this;
         }
@@ -729,10 +753,11 @@ export class CodegenCtx implements ICtx {
             argVal.argIndex = i;
             fnCtx.autoVars.set(this.autoVarKey(argVal), argVal);
         }
-        fn.startPc = this.program().inst.length;
+        fn.blockInfo.startPc = this.program().inst.length;
         fnCtx.g = this.g;
         fnCtx.parent = this;
         fnCtx.fnInfo = fn;
+        fnCtx.blockInfo = fn.blockInfo;
         fnCtx.dim(id, undefined, returnType, false);
         return fnCtx;
     }
@@ -746,12 +771,13 @@ export class CodegenCtx implements ICtx {
         this.write(vm.InstructionID.EXIT_SUB);
     }
 
-    declArg(id: Token, isArray: boolean, ty: Type | null): Val {
+    declArg(id: Token, isArray: boolean, ty: Type | undefined, dimmedType: boolean): Val {
         const v = new Val();
         v.type = ty || kIntType;
         v.kind = ValKind.kArgument;
         v.varName = id.text;
         v.isArrayArg = isArray;
+        if (dimmedType) v.dimmed = true;
         return v;
     }
 
@@ -857,7 +883,7 @@ export class CodegenCtx implements ICtx {
             }
         }
 
-        f.calls.push(this.emit(vm.InstructionID.CALL_FUNCTION, this.stackOffset, returnVal.stackOffset, 0/*pc*/, argNames));
+        f.calls.push(this.emit(vm.InstructionID.CALL_FUNCTION, 0/*pc*/, this.stackOffset, returnVal.stackOffset, argNames));
 
         for (const a of tempArgs) {
             this.autoVars.delete(a);
@@ -1004,11 +1030,14 @@ export class CodegenCtx implements ICtx {
             ei.args[0] = this.g.program.inst.length;
         }
     }
-    doBegin(whileCond: Val) {
+    doBegin() {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kDO);
         ctrlFlow.loopStart = this.program().inst.length;
-        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, whileCond);
         this.ctrlFlowStack.push(ctrlFlow);
+    }
+    doWhileCond(cond: Val) {
+        const ctrlFlow = this.ctrlFlow() as CtrlFlow;
+        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, cond);
     }
     doExit() {
         const flow = this.ctrlFlow(CtrlFlowType.kDO);
@@ -1034,11 +1063,15 @@ export class CodegenCtx implements ICtx {
         }
         this.ctrlFlowStack.pop();
     }
-    whileBegin(whileCond: Val) {
+    whileBegin() {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kWHILE);
         ctrlFlow.loopStart = this.program().inst.length;
-        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, whileCond);
         this.ctrlFlowStack.push(ctrlFlow);
+    }
+    whileCond(cond: Val) {
+        const ctrlFlow = this.ctrlFlow();
+        if (!ctrlFlow) return;
+        ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, cond);
     }
     wend() {
         const flow = this.ctrlFlow();
@@ -1079,7 +1112,7 @@ export class CodegenCtx implements ICtx {
         this.g.gotos.push(g);
     }
     gosub(token: Token, lbl: number | string) {
-        const g = new GotoInfo(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, this.stackOffset));
+        const g = new GotoInfo(this.emit(vm.InstructionID.GOSUB, 0/*pc*/, this.stackOffset));
         g.token = token;
         if (typeof (lbl) === "number") {
             g.lineNumber = lbl;
@@ -1192,8 +1225,37 @@ export class CodegenCtx implements ICtx {
     randomize(seed: Val) {
         this.write(vm.InstructionID.RANDOMIZE, seed);
     }
+    insertInstructions(pos: number, count: number) {
+        const prog = this.program();
+        for (const inst of prog.inst) {
+            if (!vm.BranchInstructions.has(inst.id)) continue;
+            const n = inst.args[0] as number;
+            if (n > pos) {
+                inst.args[0] = n + count;
+            }
+        }
+        for (let i = 0; i < count; i++) {
+            prog.inst.push(undefined as any);
+        }
+        for (let i = prog.inst.length - 1; i >= pos + count; i--) {
+            prog.inst[i] = prog.inst[i - count];
+        }
+        for (let i = pos; i < count; i++) {
+            prog.inst[i] = undefined as any;
+        }
+    }
+    insertDeclareInstructions(pos: number, declares: vm.Instruction[]) {
+        this.insertInstructions(pos, declares.length);
+        const prog = this.program();
+        for (let i = 0; i < declares.length; i++) {
+            prog.inst[i + pos] = declares[i];
+        }
+    }
 
     finalize() {
+        if (this.finalized) {
+            throw new Error("already finalized");
+        }
         for (const r of this.g.restores) {
             let pc;
             if (typeof (r.lbl) === "string") {
@@ -1219,12 +1281,12 @@ export class CodegenCtx implements ICtx {
         }
         for (const [name, sub] of this.g.subs) {
             for (const call of sub.calls) {
-                call.args[0] = sub.startPc;
+                call.args[0] = sub.blockInfo.startPc;
             }
         }
         for (const [name, fn] of this.g.functions) {
             for (const call of fn.calls) {
-                call.args[2] = fn.startPc;
+                call.args[0] = fn.blockInfo.startPc;
             }
         }
         for (const g of this.g.gotos) {
@@ -1244,6 +1306,24 @@ export class CodegenCtx implements ICtx {
             }
             g.inst.args[0] = pc;
         }
+        // DECLARE_VAR instructions need to be first in the main module, and in each sub/function.
+        // Insert these instructions now, starting with the last block.
+        // This is only safe at the end of finalize, since some instruction indices are not updated.
+        const allBlocks: BlockInfo[] = [this.blockInfo];
+        for (const [name, f] of this.g.functions) {
+            if (f.blockInfo.startPc >= 0) allBlocks.push(f.blockInfo);
+        }
+        for (const [name, s] of this.g.subs) {
+            if (s.blockInfo.startPc >= 0) allBlocks.push(s.blockInfo);
+        }
+        allBlocks.sort((a, b) => a.startPc - b.startPc);
+        for (let i = allBlocks.length - 1; i >= 0; i--) {
+            const b = allBlocks[i];
+            if (b.declareInstructions.length) {
+                this.insertDeclareInstructions(b.startPc, b.declareInstructions);
+            }
+        }
+        this.finalized = true;
     }
     end() {
         this.write(vm.InstructionID.END);
@@ -1302,7 +1382,7 @@ export class CodegenCtx implements ICtx {
             const autoVar = this.autoVars.get(autoKey);
             if (autoVar) return autoKey;
             this.autoVars.set(autoKey, Val.newVar(v.varName, v.type));
-            this.write(vm.InstructionID.DECLARE_VAR, autoKey, vm.VariableValue.single(v.type, vm.zeroValue(v.type)));
+            this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [autoKey, vm.VariableValue.single(v.type, vm.zeroValue(v.type))]));
             return autoKey;
         }
         return "";
@@ -1451,6 +1531,13 @@ export class CodegenCtx implements ICtx {
         }
         const inst = new vm.Instruction(id, args);
         this.g.program.inst.push(inst);
+        // Map instruction offset to source line number.
+        if (this.g.locator) {
+            const loc = this.g.locator.currentLocation();
+            if (loc) {
+                this.g.program.instToLine.set(this.g.program.inst.length - 1, loc.line);
+            }
+        }
         return inst;
     }
     private expectNumeric(v: Val): boolean {

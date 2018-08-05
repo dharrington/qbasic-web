@@ -38,6 +38,12 @@ GOTO 1
 WEND
 1 PRINT
 
+X=1
+WHILE X<2
+  X=X+1
+  PRINT "8"
+WEND
+
 REM output
 11
 2
@@ -46,3 +52,4 @@ REM output
 5
 6
 7
+8

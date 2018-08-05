@@ -2,7 +2,7 @@ GOTO main
 
 intro:
 GOSUB preintro
-PRINT "HI THERE"
+PRINT "HI THERE"; X
 RETURN 10
 5 preintro: PRINT "PREINTRO"
 RETURN
@@ -14,5 +14,5 @@ GOSUB intro
 
 REM output
 PREINTRO
-HI THERE
+HI THERE 5 
  5 DONE

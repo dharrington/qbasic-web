@@ -95,7 +95,7 @@ function runSuccess(program: string, exp: Expectation) {
         }
     } else {
         if (exe.exception) {
-            console.log(`Program had exception: ${exe.exception}.`);
+            console.log(`Program had exception: ${exe.exception} on line ${exe.currentLine()}`);
             failed = true;
         }
     }

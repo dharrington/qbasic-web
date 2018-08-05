@@ -127,7 +127,7 @@ export class Val {
         if (this.shared) v.shared = this.shared;
         if (this.dimmed) v.dimmed = this.dimmed;
         if (this.stackOffset) v.stackOffset = this.stackOffset;
-        if (this.argIndex) v.argIndex = this.argIndex;
+        if (this.argIndex !== undefined) v.argIndex = this.argIndex;
         return v;
     }
     isCommaDelim(): boolean { return this.kind === ValKind.kCommaDelim; }
@@ -159,9 +159,13 @@ export class Coord {
 
 export type MVal = Val | undefined;
 
+export interface ILocator {
+    currentLocation(): Location | undefined;
+}
 // The parser is fairly dumb, and just relays information to a context. The primary purpose of the context is to
 // generate code, but there are other activities you might perform, like syntax highlighting or autocompletion.
 export interface ICtx {
+    setLocator(locator: ILocator);
     // Called after parsing the entire program.
     finalize();
     error(message: string, loc: Location);
@@ -184,7 +188,7 @@ export interface ICtx {
     subExit();
     functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx;
     functionExit();
-    declArg(id: Token, isArray: boolean, ty: Type | null): Val;
+    declArg(id: Token, isArray: boolean, ty: Type | undefined, dimmedType: boolean): Val;
     endSub();
     endFunction();
     declSub(id: Token, args: Val[]);
@@ -204,10 +208,12 @@ export interface ICtx {
     forBegin(idx: Val, f: Val, t: Val, st: Val);
     forExit();
     forEnd();
-    doBegin(whileCond: Val);
+    doBegin();
+    doWhileCond(whileCond: Val);
     doExit();
     doEnd(whileCond: Val);
-    whileBegin(whileCond: Val);
+    whileBegin();
+    whileCond(cond: Val);
     wend();
     gotoLine(no: number, numberToken: Token);
     gotoLabel(lbl: Token);
@@ -243,7 +249,7 @@ export const kValTrue = Val.newNumberLiteral(-1, kIntType);
 export const kValZero = Val.newNumberLiteral(0, kIntType);
 
 // Parses QBasic code, relays information to ctx.
-class Parser {
+class Parser implements ILocator {
     private tokenIndex = 0;
     private isEnd = false;
     private openBlocks: Block[] = [];
@@ -251,6 +257,14 @@ class Parser {
     private defaultVarTypes = new Map<string, Type>();
     private moduleCtx: ICtx = this.ctx;
     constructor(private ctx: ICtx, private tokens: Token[]) {
+        ctx.setLocator(this);
+    }
+    currentLocation(): Location | undefined {
+        const i = this.tokenIndex - 1;
+        if (i < 0 || i >= this.tokens.length) {
+            return undefined;
+        }
+        return this.tokens[i].loc;
     }
     defaultType(varName: string, sigil?: BaseType): Type {
         return Type.basic(sigil) || this.defaultVarTypes.get(varName[0]) || kSingleType;
@@ -809,19 +823,21 @@ class Parser {
                 this.expectOp(")");
             }
             let ty = Type.basic(sig);
+            let dimmedType = false;
             if (this.nextIf("AS")) {
                 const declType = this.typename();
                 if (declType && sig !== BaseType.kNone && declType.type !== sig) {
                     this.error("mismatched type");
                 } else if (declType) {
                     ty = declType;
+                    dimmedType = true;
                 }
             }
             if (!ty) {
                 ty = kSingleType;
             }
             if (id) {
-                args.push(this.ctx.declArg(id, isArray, ty));
+                args.push(this.ctx.declArg(id, isArray, ty, dimmedType));
             } else { break; }
         }
         this.expectOp(")");
@@ -1312,6 +1328,7 @@ class Parser {
     doStmt() {
         const doTok = this.expectIdent("DO");
         if (!doTok) return;
+        this.ctx.doBegin();
         let whileCond: MVal = kValTrue;
         if (this.nextIf("UNTIL")) {
             const until = this.expr();
@@ -1324,7 +1341,7 @@ class Parser {
         }
         if (!whileCond) return;
         this.openBlocks.push(new Block(doTok, "DO"));
-        this.ctx.doBegin(whileCond);
+        this.ctx.doWhileCond(whileCond);
     }
     loopStmt() {
         this.expectIdent("LOOP");
@@ -1351,9 +1368,10 @@ class Parser {
         const whileTok = this.expectIdent("WHILE");
         if (!whileTok) return;
         this.openBlocks.push(new Block(whileTok, "WHILE"));
+        this.ctx.whileBegin();
         const e = this.expr();
         if (!e) return;
-        this.ctx.whileBegin(e);
+        this.ctx.whileCond(e);
     }
     wendStmt() {
         this.expectIdent("WEND");

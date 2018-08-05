@@ -122,7 +122,8 @@ export enum InstructionID {
     BRANCH_IFNOT, // PC S
     BRANCH, // PC
     CALL_SUB, // PC stack-size string[]
-    CALL_FUNCTION, // stack-size S PC string[]
+    GOSUB, // PC stack-size
+    CALL_FUNCTION, // PC stack-size S string[]
     EXIT_SUB, // <no parameters>
     RETURN, // PC
     SET_RETURN, // S
@@ -183,6 +184,7 @@ export enum InstructionID {
     LEN, // S S
     LCASE, // S S
     UCASE, // S S
+    SPACE, // S S
     NOP,
 }
 
@@ -199,6 +201,9 @@ export const ConstExprInstructions = new Set([
     InstructionID.SIN, InstructionID.COS, InstructionID.ATN, InstructionID.CINT,
     InstructionID.CLNG, InstructionID.CDBL, InstructionID.CSNG, InstructionID.EXP,
 ]);
+
+export const BranchInstructions = new Set([InstructionID.BRANCH_IFNOT, InstructionID.BRANCH, InstructionID.CALL_SUB,
+InstructionID.GOSUB, InstructionID.CALL_FUNCTION, InstructionID.RETURN]);
 
 const kIntMax = 32767;
 const kIntMin = -32768;
@@ -288,6 +293,7 @@ export function zeroValue(ty: Type): any {
 }
 
 class IndexOutOfRange { }
+class InternalError { }
 type UserTypeValue = any[];
 type RawValue = number | string | UserTypeValue | undefined;
 
@@ -472,8 +478,13 @@ export class Program {
     public data: VariableValue[] = [];
     // Contains an entry for each DATA statement value. Each is an offset into data.
     public dataList: number[] = [];
+
+    public instToLine = new Map<number, number>();
     toString(): string {
         return this.inst.map((inst, idx) => `${idx}\t` + inst.toString(this)).join("\n");
+    }
+    instructionLineNumber(instOffset: number): number | undefined {
+        return this.instToLine.get(instOffset);
     }
     instructionArgToString(id: InstructionID, arg: any, argIndex: number): string {
         if (typeof (arg) === "number") {
@@ -499,17 +510,23 @@ class Frame {
     public parent: Frame | undefined;
     public pc: number = 0;
     public stackOffset: number = 0;
-    public vars: Map<string, VariableValue> = new Map<string, VariableValue>();
+    public vars?: Map<string, VariableValue> = new Map<string, VariableValue>();
     // Subroutine arguments are passed by reference. That's accomplished by mapping the argument index
     // onto the calling code's variable name.
     public foreignArgNames: string[];
     public returnStackPos?: number;
 
-    readVar(name: string, index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange {
+    getVars(): Map<string, VariableValue> {
+        if (!this.vars) return (this.parent as Frame).getVars();
+        return this.vars;
+    }
+    readVar(name: string, index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange | InternalError {
+        // GOSUB creates a frame, but no variables.
+        if (!this.vars) return (this.parent as Frame).readVar(name, index, fieldIndex);
         const v = this.vars.get(name);
         if (!v) {
-            console.log("internal error");
-            return zeroValue(kSingleType); // should not happen.
+            return new InternalError();
+            // return zeroValue(kSingleType); // should not happen.
         }
         if (!index && !fieldIndex) return v;
         return v.valAtIndex(index, fieldIndex);
@@ -559,6 +576,7 @@ export class Execution {
     public exception: any = null;
     public waiting: boolean = false;
     public onEnd: () => void | undefined;
+    public onException: (error: string, lineNo: number | undefined) => void;
     public done: boolean = false;
 
     private frame: Frame = new Frame();
@@ -608,7 +626,7 @@ export class Execution {
         }
         this.stack[addr] = val;
     }
-    run(maxSteps = 100000) {
+    run(maxSteps = 10000) {
         this.inRun = true;
         // Run at most this many operations, so that we don't freeze the UI entirely.
         let i = 0;
@@ -625,8 +643,12 @@ export class Execution {
     start() {
         this.run();
     }
+    currentLine(): number | undefined {
+        return this.prog.instructionLineNumber(this.frame.pc);
+    }
     raise(err) {
         this.exception = err;
+        if (this.onException) { this.onException(err, this.currentLine()); }
     }
     end() {
         this.done = true;
@@ -645,7 +667,7 @@ export class Execution {
             console.error("called step while in wait");
         }
         const inst = this.prog.inst[this.frame.pc];
-        //console.log(inst.toString(this.prog));
+        // console.log(inst.toString(this.prog));
         const args = inst.args;
         this.frame.pc++;
         switch (inst.id) {
@@ -659,7 +681,9 @@ export class Execution {
                     index = posStackIndices.map((i) => this.readVal(i).val as number);
                 }
                 const value = this.frame.readVar(varName, index, fieldIndices);
-                if (value instanceof IndexOutOfRange) {
+                if (value instanceof InternalError) {
+                    this.raise("internal error");
+                } else if (value instanceof IndexOutOfRange) {
                     this.frame.pc--;
                     this.raise("index out of range");
                 } else {
@@ -677,7 +701,9 @@ export class Execution {
                     index = posStackIndices.map((i) => this.readVal(i).val as number);
                 }
                 const value = this.moduleFrame.readVar(varName, index, fieldIndices);
-                if (value instanceof IndexOutOfRange) {
+                if (value instanceof InternalError) {
+                    this.raise("internal error");
+                } else if (value instanceof IndexOutOfRange) {
                     this.frame.pc--;
                     this.raise("index out of range");
                 } else {
@@ -699,7 +725,9 @@ export class Execution {
                     break;
                 }
                 const value = stackParent.readVar(varName, index);
-                if (value instanceof IndexOutOfRange) {
+                if (value instanceof InternalError) {
+                    this.raise("internal error");
+                } else if (value instanceof IndexOutOfRange) {
                     this.frame.pc--;
                     this.raise("index out of range");
                 } else {
@@ -708,10 +736,10 @@ export class Execution {
                 break;
             }
             case InstructionID.DECLARE_VAR:
-                this.frame.vars.set(args[0] as string, args[1] as VariableValue);
+                this.frame.getVars().set(args[0] as string, args[1] as VariableValue);
                 break;
             case InstructionID.ASSIGN_VAR: {
-                const v = this.frame.vars.get(args[0] as string);
+                const v = this.frame.getVars().get(args[0] as string);
                 if (!v) {
                     this.raise("ASSIGN_VAR does not exist");
                     break;
@@ -724,7 +752,7 @@ export class Execution {
                 break;
             }
             case InstructionID.ASSIGN_VAR_SHARED: {
-                const v = this.moduleFrame.vars.get(args[0] as string);
+                const v = this.moduleFrame.getVars().get(args[0] as string);
                 if (!v) {
                     this.raise("ASSIGN_VAR_SHARED does not exist");
                     break;
@@ -742,7 +770,7 @@ export class Execution {
                     this.raise("ASSIGN_ARG at module level");
                     break;
                 }
-                const v = this.frame.parent.vars.get(varName);
+                const v = this.frame.parent.getVars().get(varName);
                 if (!v) {
                     this.raise("no variable");
                     break;
@@ -893,8 +921,8 @@ export class Execution {
                 break;
             }
             case InstructionID.LOCATE: {
-                this.vpc.locate(args[0] ? this.readVal(args[0]).anyval() : null,
-                    args[1] ? this.readVal(args[1]).anyval() : null);
+                this.vpc.locate(args[0] !== undefined ? this.readVal(args[0]).anyval() : null,
+                    args[1] !== undefined ? this.readVal(args[1]).anyval() : null);
                 break;
             }
             case InstructionID.INPUT: {
@@ -937,13 +965,23 @@ export class Execution {
                 this.frame = f;
                 break;
             }
+            case InstructionID.GOSUB: {
+                const f = new Frame();
+                f.parent = this.frame;
+                f.stackOffset = this.frame.stackOffset + args[1] as number;
+                f.foreignArgNames = args[2] as string[];
+                f.pc = args[0] as number;
+                f.vars = undefined;
+                this.frame = f;
+                break;
+            }
             case InstructionID.CALL_FUNCTION: {
                 const f = new Frame();
                 f.parent = this.frame;
-                f.stackOffset = this.frame.stackOffset + args[0] as number;
-                f.returnStackPos = args[1] as number;
+                f.stackOffset = this.frame.stackOffset + args[1] as number;
+                f.returnStackPos = args[2] as number;
                 f.foreignArgNames = args[3] as string[];
-                f.pc = args[2] as number;
+                f.pc = args[0] as number;
                 this.frame = f;
                 break;
             }
@@ -973,9 +1011,9 @@ export class Execution {
                 const val = this.readVal(args[1]).copySingle();
                 const offset = this.readVal(args[2]);
                 if (args.length > 3) {
-                    val.val = (val.val as string).substr(offset.anyval(), this.readVal(args[3]).anyval());
+                    val.val = (val.val as string).substr(Math.max(0, offset.numVal() - 1), this.readVal(args[3]).numVal());
                 } else {
-                    val.val = (val.val as string).substr(offset.anyval());
+                    val.val = (val.val as string).substr(Math.max(0, offset.numVal() - 1));
                 }
                 this.save(args[0], val);
                 break;
@@ -1188,6 +1226,11 @@ export class Execution {
             }
             case InstructionID.LCASE: {
                 this.save(args[0], VariableValue.newString(this.readVal(args[1]).strVal().toLowerCase()));
+                break;
+            }
+            case InstructionID.SPACE: {
+                const n = this.readVal(args[1]).numVal();
+                this.save(args[0], VariableValue.newString(" ".repeat(n)));
                 break;
             }
             case InstructionID.NOP: {

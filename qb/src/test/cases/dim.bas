@@ -15,8 +15,14 @@ FOR X = 1 TO 3
 NEXT X
 YY = "HI"
 PRINT YY
+FOR X = 1 TO 3
+  DIM INLOOP AS INTEGER
+  PRINT INLOOP;
+  INLOOP = INLOOP + 1
+NEXT X
 REM output
  1  2  3  4 
  2  4  6  8 
  3  6  9  12 
 HI
+ 0  1  2 
