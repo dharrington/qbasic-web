@@ -16,6 +16,14 @@
 
 import { BaseType, baseTypeToSigil, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 
+export const kGlobalBit = 0x80000000;
+export function globalAddr(offset: number): number {
+    return offset | kGlobalBit;
+}
+export function globalAddrToOffset(addr: number): number {
+    return addr ^ kGlobalBit;
+}
+
 // The virtual computer on which the VM executes.
 export interface IVirtualPC {
     print(text: string);
@@ -107,13 +115,7 @@ export enum InstructionID {
     // name = variable name (string)
     // pos = array index: array of stack index (number[])
     // For instructions that write to a stack value, the output is the first parameter.
-    LOAD_VARVAL, // S name [pos] [fieldIndex ...]
-    LOAD_VARVAL_SHARED,
-    LOAD_ARGVAL, // S name [pos]
-    DECLARE_VAR, // name V
-    ASSIGN_VAR, // name S [pos]
-    ASSIGN_VAR_SHARED, // name S [pos]
-    ASSIGN_ARG, // arg-index S [pos]
+    ADDRESS, // S S
     INPUT, // InputSpec
     TO_INT, // S S
     TO_LONG, // S S
@@ -121,12 +123,15 @@ export enum InstructionID {
     TO_DOUBLE, // S S
     BRANCH_IFNOT, // PC S
     BRANCH, // PC
-    CALL_SUB, // PC stack-size string[]
+    CALL_SUB, // PC stack-size [S...]
     GOSUB, // PC stack-size
     CALL_FUNCTION, // PC stack-size S string[]
     EXIT_SUB, // <no parameters>
     RETURN, // PC
-    SET_RETURN, // S
+    DECLARE, // S V
+    LOAD, // S S [index] [fieldIndex]
+    ASSIGN, // S S [index] [fieldIndex]
+    COPY, // S S
     ADD, // S S S
     SUB, // S S S
     NEG, // S S S
@@ -191,6 +196,7 @@ export enum InstructionID {
 // These instructions produce constant output given constant inputs.
 export const ConstExprInstructions = new Set([
     InstructionID.TO_INT, InstructionID.TO_LONG, InstructionID.TO_SINGLE, InstructionID.TO_DOUBLE,
+    InstructionID.ASSIGN, InstructionID.COPY,
     InstructionID.ADD, InstructionID.SUB, InstructionID.NEG, InstructionID.MUL,
     InstructionID.DIV, InstructionID.IDIV, InstructionID.MOD, InstructionID.EQ,
     InstructionID.NEQ, InstructionID.GTE, InstructionID.LTE, InstructionID.LT,
@@ -256,7 +262,7 @@ export class InputSpec {
                     break;
                 }
                 case BaseType.kSingle: {
-                    const m = /^[+-]?([0-9]+([.][0-9]*[EeDd][+-][0-9]+)?)|(\.[0-9]+([EeDd][+-][0-9]+))/.exec(text);
+                    const m = /^[+-]?([0-9]+([.][0-9]*([EeDd][+-][0-9]+)?)?)|(\.[0-9]+([EeDd][+-][0-9]+)?)/.exec(text);
                     if (!m) return undefined;
                     const i = parseFloat(m[0]);
                     result.push(VariableValue.single(kSingleType, i));
@@ -264,7 +270,7 @@ export class InputSpec {
                     break;
                 }
                 case BaseType.kDouble: {
-                    const m = /^[+-]?([0-9]+([.][0-9]*[EeDd][+-][0-9]+)?)|(\.[0-9]+([EeDd][+-][0-9]+))/.exec(text);
+                    const m = /^[+-]?([0-9]+([.][0-9]*([EeDd][+-][0-9]+)?)?)|(\.[0-9]+([EeDd][+-][0-9]+)?)/.exec(text);
                     if (!m) return undefined;
                     const i = parseFloat(m[0]);
                     result.push(VariableValue.single(kDoubleType, i));
@@ -360,7 +366,7 @@ export class VariableValue {
         } else if (!this.type.isString()) {
             typeStr = this.type.toString();
         } else {
-            return `'${this.val}'${dimStr}`;
+            return `'${(this.val as string).replace(/\n/, "\\n")}'${dimStr}`;
         }
         return `${this.val}${typeStr}${dimStr}`;
     }
@@ -419,6 +425,12 @@ export class VariableValue {
     copySingle(): VariableValue {
         return VariableValue.single(this.type, this.val);
     }
+    copyDecl(): VariableValue {
+        const clone = new VariableValue(this.type);
+        clone.val = this.val;
+        if (this.dims !== undefined) clone.dims = this.dims;
+        return clone;
+    }
     getNumber(): number {
         return this.val as number;
     }
@@ -466,42 +478,227 @@ export class Instruction {
         if (val instanceof VariableValue) return val.toString();
         return "" + val;
     }
+    static parameterTypeFromList(offset: number, list: string[], otherwise: string = ""): string {
+        if (offset < list.length) {
+            return list[offset];
+        }
+        return otherwise;
+    }
     constructor(public id: InstructionID, public args: any[]) { }
     toString(prog: Program): string {
-        return `${InstructionID[this.id]} ${this.args.map((x, idx) => prog.instructionArgToString(this.id, x, idx)).join(", ")}`;
+        return `${InstructionID[this.id]} ${this.args.map((x, idx) => prog.instructionArgToString(this, x, idx)).join(", ")}`;
+    }
+    parameterType(offset: number): string {
+        switch (this.id) {
+            case InstructionID.ASSIGN:  // S S [index] [fieldIndex]
+            case InstructionID.LOAD: // S S [index] [fieldIndex]
+                if (offset === 0) return "S";
+                if (offset === 1) return "S";
+                if (offset === 2) return "index";
+                return "fieldIndex";
+            case InstructionID.INPUT:  // InputSpec
+                return "InputSpec";
+            case InstructionID.BRANCH_IFNOT:  // PC S
+                if (offset === 0) return "PC";
+                return "S";
+            case InstructionID.BRANCH:  // PC
+                return "PC";
+            case InstructionID.CALL_SUB:  // PC stack-size S[]
+                if (offset === 0) return "PC";
+                if (offset === 1) return "stacksize";
+                return "S";
+            case InstructionID.GOSUB:  // PC stack-size
+                if (offset === 0) return "PC";
+                return "stacksize";
+            case InstructionID.CALL_FUNCTION:  // PC stack-size S string[]
+                if (offset === 0) return "PC";
+                if (offset === 1) return "stacksize";
+                if (offset === 2) return "S";
+                return "argnames";
+            case InstructionID.EXIT_SUB:  // <no parameters>
+                return "";
+            case InstructionID.RETURN:  // PC
+                return "PC";
+            case InstructionID.READ:  // S BaseType
+                if (offset === 0) return "S";
+                return "baseType";
+            case InstructionID.RESTORE:  // DP
+                return "DP";
+            case InstructionID.LINE:  // S S S S [S [OptionString [StyleString]]]
+                if (offset <= 5) return "S";
+                if (offset === 6) return "option";
+                return "style";
+            case InstructionID.DECLARE:  // S V
+                if (offset === 0) return "S";
+                return "V";
+            case InstructionID.COPY: // S S
+            case InstructionID.ADDRESS:  // S S
+            case InstructionID.TO_INT:  // S S
+            case InstructionID.TO_LONG:  // S S
+            case InstructionID.TO_SINGLE:  // S S
+            case InstructionID.TO_DOUBLE:  // S S
+            case InstructionID.ADD:  // S S S
+            case InstructionID.ADD:  // S S S
+            case InstructionID.SUB:  // S S S
+            case InstructionID.NEG:  // S S S
+            case InstructionID.MUL:  // S S S
+            case InstructionID.DIV:  // S S S
+            case InstructionID.IDIV:  // S S S
+            case InstructionID.MOD:  // S S S
+            case InstructionID.EQ:  // S S S
+            case InstructionID.NEQ:  // S S S
+            case InstructionID.GTE:  // S S S
+            case InstructionID.LTE:  // S S S
+            case InstructionID.LT:  // S S S
+            case InstructionID.GT:  // S S S
+            case InstructionID.OR:  // S S S
+            case InstructionID.AND:  // S S S
+            case InstructionID.XOR:  // S S S
+            case InstructionID.NOT:  // S S
+            case InstructionID.LOGICNOT:  // S S
+            case InstructionID.PRINT:  // S ...
+            case InstructionID.LOCATE:  // S|undefined [ S|undefined ]
+            case InstructionID.ABS:  // S S
+            case InstructionID.MID:  // S S S [ S ]
+            case InstructionID.RIGHT:  // S S S
+            case InstructionID.LEFT:  // S S S
+            case InstructionID.CHR:  // S S
+            case InstructionID.ASC:  // S S
+            case InstructionID.RND:  // S [ S ]
+            case InstructionID.INT:  // S S
+            case InstructionID.FIX:  // S S
+            case InstructionID.END:  // <no parameters>
+            case InstructionID.COLOR:  // S S
+            case InstructionID.PALETTE:  // [ S S ]
+            case InstructionID.GET_DRAW_POS:  // S S
+            case InstructionID.PSET:  // S S [ S ]
+            case InstructionID.CLS:  // <no parameters> (TODO)
+            case InstructionID.SCREEN:  // S
+            case InstructionID.SLEEP:  // S
+            case InstructionID.INKEY:  // S
+            case InstructionID.VAL:  // S S
+            case InstructionID.STR:  // S S
+            case InstructionID.TAN:  // S S
+            case InstructionID.SIN:  // S S
+            case InstructionID.COS:  // S S
+            case InstructionID.ATN:  // S S
+            case InstructionID.CINT:  // S S
+            case InstructionID.CLNG:  // S S
+            case InstructionID.CDBL:  // S S
+            case InstructionID.CSNG:  // S S
+            case InstructionID.EXP:  // S S
+            case InstructionID.TIMER:  // S
+            case InstructionID.RANDOMIZE:  // S
+            case InstructionID.LEN:  // S S
+            case InstructionID.LCASE:  // S S
+            case InstructionID.UCASE:  // S S
+            case InstructionID.SPACE:  // S S
+            case InstructionID.NOP:
+                if (this.args[offset] !== undefined) {
+                    return "S";
+                }
+                return "";
+            default:
+                throw new Error("missing case " + this.id);
+        }
+    }
+    shiftStackOffset(add: number, includeNegative: boolean) {
+        for (let i = 0; i < this.args.length; i++) {
+            const pt = this.parameterType(i);
+            if (pt === "S" || pt === "stack-size") {
+                if (includeNegative || this.args[i] >= 0) {
+                    this.args[i] = this.args[i] + add;
+                }
+            }
+        }
+    }
+    mapStackOffset(oldToNew: (s: number) => number) {
+        for (let i = 0; i < this.args.length; i++) {
+            if (this.parameterType(i) === "S") {
+                this.args[i] = oldToNew(this.args[i]);
+            }
+        }
+        // TODO: I don't like this.
+        if ((this.id === InstructionID.ASSIGN || this.id === InstructionID.LOAD) && this.args[2] !== undefined) {
+            for (let i = 0; i < this.args[2].length; i++) {
+                this.args[2][i] = oldToNew(this.args[2][i]);
+            }
+        }
+        if (this.id === InstructionID.INPUT) {
+            const inpustSpec = this.args[0] as InputSpec;
+            for (const input of inpustSpec.inputs) {
+                input.stackOffset = oldToNew(input.stackOffset);
+            }
+        }
     }
 }
+
 export class Program {
     // The program's instructions.
     public inst: Instruction[] = [];
-    // The program's const data.
+    // The program's const data. The stack is initialized with these values.
     public data: VariableValue[] = [];
     // Contains an entry for each DATA statement value. Each is an offset into data.
     public dataList: number[] = [];
 
     public instToLine = new Map<number, number>();
+
+    public source?: string;
     toString(): string {
         return this.inst.map((inst, idx) => `${idx}\t` + inst.toString(this)).join("\n");
     }
     instructionLineNumber(instOffset: number): number | undefined {
         return this.instToLine.get(instOffset);
     }
-    instructionArgToString(id: InstructionID, arg: any, argIndex: number): string {
-        if (typeof (arg) === "number") {
-            if ((id === InstructionID.BRANCH || id === InstructionID.BRANCH_IFNOT) && argIndex === 0) {
-                return "" + arg; // PC;
-            }
-            if (id === InstructionID.ASSIGN_ARG && argIndex === 0) {
-                return "" + arg;
-            }
-            if (arg < 0 && -arg < this.data.length) {
-                return this.data[-arg].toShortString().replace(/\n/, "\\n");
+    instructionArgToString(inst: Instruction, arg: any, argIndex: number): string {
+        switch (inst.parameterType(argIndex)) {
+            case "S": {
+                const v = arg as number;
+                if (v & kGlobalBit) {
+                    const offset = v ^ kGlobalBit;
+                    if (offset < this.data.length) {
+                        return this.data[offset].toShortString().replace(/\n/, "\\n");
+                    }
+                    return "g" + (v ^ kGlobalBit);
+                }
+                return "s" + v;
+                break;
             }
         }
         if (typeof (arg) === "string") {
             return arg;
         }
         return "" + arg;
+    }
+    sourceListingWithByteCode(source?: string, instAnnotations?: Map<number, string>): string {
+        const lineToInst = new Map<number, number>();
+        for (const [i, l] of this.instToLine) {
+            const v = lineToInst.get(i);
+            if (v !== undefined) {
+                lineToInst.set(l, Math.min(i, v));
+            } else {
+                lineToInst.set(l, i);
+            }
+        }
+        const sourceLines = (source || "").split("\n");
+        const output: string[] = [];
+        let instOffset = 0;
+        const addInstUntil = (offset) => {
+            while (instOffset < offset) {
+                const annotation = instAnnotations && instAnnotations.get(instOffset) || "";
+                output.push(`${annotation}\t[${instOffset}]${this.inst[instOffset].toString(this)}`);
+                instOffset++;
+            }
+        };
+        for (let i = 0; i < sourceLines.length; i++) {
+            const nextInst = lineToInst.get(i);
+            if (nextInst !== undefined) {
+                addInstUntil(nextInst);
+            }
+            output.push(`${i}\t${sourceLines[i]}`);
+        }
+        addInstUntil(this.inst.length);
+        return output.join("\n");
     }
 }
 
@@ -510,27 +707,6 @@ class Frame {
     public parent: Frame | undefined;
     public pc: number = 0;
     public stackOffset: number = 0;
-    public vars?: Map<string, VariableValue> = new Map<string, VariableValue>();
-    // Subroutine arguments are passed by reference. That's accomplished by mapping the argument index
-    // onto the calling code's variable name.
-    public foreignArgNames: string[];
-    public returnStackPos?: number;
-
-    getVars(): Map<string, VariableValue> {
-        if (!this.vars) return (this.parent as Frame).getVars();
-        return this.vars;
-    }
-    readVar(name: string, index?: number[], fieldIndex?: number[]): VariableValue | IndexOutOfRange | InternalError {
-        // GOSUB creates a frame, but no variables.
-        if (!this.vars) return (this.parent as Frame).readVar(name, index, fieldIndex);
-        const v = this.vars.get(name);
-        if (!v) {
-            return new InternalError();
-            // return zeroValue(kSingleType); // should not happen.
-        }
-        if (!index && !fieldIndex) return v;
-        return v.valAtIndex(index, fieldIndex);
-    }
 }
 
 export function toInt(v: number): number {
@@ -572,7 +748,7 @@ function fixupNumberForPrinting(n: string): string {
 
 export class Execution {
     // Stack addressed by non-negative numbers.
-    public stack: any[] = [];
+    public stack: VariableValue[] = [];
     public exception: any = null;
     public waiting: boolean = false;
     public onEnd: () => void | undefined;
@@ -581,28 +757,50 @@ export class Execution {
 
     private frame: Frame = new Frame();
     private moduleFrame: Frame = this.frame;
-    // Data addressed by negative numbers.
-    private data: any[];
     private inRun: boolean;
     private lastPointX: number = 0;
     private lastPointY: number = 0;
     private rnd: Rnd = new Rnd();
     private readPos = 0;
     constructor(private prog: Program, private vpc: IVirtualPC) {
-        this.data = prog.data;
+        for (const d of prog.data) {
+            this.stack.push(d.copySingle());
+        }
+    }
+    dumpStack(): string {
+        const entries: string[] = [];
+        for (let i = 0; i < this.stack.length; i++) {
+            const s = this.stack[i];
+            if (s instanceof VariableValue) {
+                entries.push(`${i}\t${s.toShortString()}`);
+            }
+        }
+        return entries.join("\n");
+    }
+    debugDump(): string {
+        const annotations = new Map<number, string>();
+        let f: Frame | undefined = this.frame;
+        let frameIndex = 0;
+        while (f) {
+            annotations.set(f.pc - 1, "" + frameIndex++);
+            f = f.parent;
+        }
+        const listing = this.prog.sourceListingWithByteCode(this.prog.source, annotations);
+
+        return `---- STACK ----
+${this.dumpStack()}
+---- PROGRAM ----
+${listing}
+`;
     }
     destroy() {
         this.exception = "destroyed";
     }
-    stackIndex(addr: number): number {
-        if (addr < 0) return -addr;
-        return this.frame.stackOffset + addr;
-    }
     read(addr: number): any {
-        if (addr >= 0) {
-            return this.stack[this.stackIndex(addr)];
+        if (addr & kGlobalBit) {
+            return this.stack[addr ^ kGlobalBit];
         } else {
-            return this.data[-addr];
+            return this.stack[addr + this.frame.stackOffset];
         }
     }
     readShared(addr: number): any {
@@ -614,17 +812,15 @@ export class Execution {
     readValShared(addr: number): VariableValue {
         return this.readShared(addr);
     }
-    save(addr: number, val: any) {
-        while (this.stack.length <= addr) {
-            this.stack.push(null);
+    save(addr: number, val: VariableValue) {
+        if (addr & kGlobalBit) {
+            this.stack[addr ^ kGlobalBit] = val;
+        } else {
+            while (this.stack.length <= addr) {
+                this.stack.push(VariableValue.single(kIntType, 0));
+            }
+            this.stack[addr + this.frame.stackOffset] = val;
         }
-        this.stack[this.stackIndex(addr)] = val;
-    }
-    saveShared(addr: number, val: any) {
-        while (this.stack.length <= addr) {
-            this.stack.push(null);
-        }
-        this.stack[addr] = val;
     }
     run(maxSteps = 10000) {
         this.inRun = true;
@@ -671,116 +867,51 @@ export class Execution {
         const args = inst.args;
         this.frame.pc++;
         switch (inst.id) {
-            case InstructionID.LOAD_VARVAL: {
+            case InstructionID.LOAD: {
                 const idx = args[0];
-                const varName = args[1];
+                const varOffset = args[1];
                 const posStackIndices = args[2] as number[] | undefined;
                 const fieldIndices = args[3] as number[] | undefined;
                 let index: number[] | undefined;
                 if (posStackIndices) {
                     index = posStackIndices.map((i) => this.readVal(i).val as number);
                 }
-                const value = this.frame.readVar(varName, index, fieldIndices);
-                if (value instanceof InternalError) {
-                    this.raise("internal error");
-                } else if (value instanceof IndexOutOfRange) {
-                    this.frame.pc--;
-                    this.raise("index out of range");
+                const value = this.readVal(varOffset);
+                if (index || fieldIndices) {
+                    const v = value.valAtIndex(index, fieldIndices);
+                    if (v instanceof InternalError) {
+                        this.raise("internal error");
+                    } else if (v instanceof IndexOutOfRange) {
+                        this.frame.pc--;
+                        this.raise("index out of range");
+                    } else {
+                        this.save(idx, v);
+                    }
                 } else {
                     this.save(idx, value);
                 }
                 break;
             }
-            case InstructionID.LOAD_VARVAL_SHARED: {
-                const idx = args[0];
-                const varName = args[1];
-                const posStackIndices = args[2] as number[] | undefined;
-                const fieldIndices = args[3] as number[] | undefined;
-                let index: number[] | undefined;
-                if (posStackIndices) {
-                    index = posStackIndices.map((i) => this.readVal(i).val as number);
-                }
-                const value = this.moduleFrame.readVar(varName, index, fieldIndices);
-                if (value instanceof InternalError) {
-                    this.raise("internal error");
-                } else if (value instanceof IndexOutOfRange) {
-                    this.frame.pc--;
-                    this.raise("index out of range");
-                } else {
-                    this.saveShared(idx, value);
-                }
+            case InstructionID.ADDRESS: {
+                this.save(args[0], this.readVal(args[1]));
                 break;
             }
-            case InstructionID.LOAD_ARGVAL: {
-                const idx = args[0];
-                const varName = this.frame.foreignArgNames[args[1]];
-                const posStackIndices = args[2] as number[];
-                let index: number[] | undefined;
-                if (posStackIndices) {
-                    index = posStackIndices.map((i) => this.readVal(i).getNumber());
-                }
-                const stackParent = this.frame.parent;
-                if (!stackParent) {
-                    this.raise("LOAD_ARGVAL in module level");
-                    break;
-                }
-                const value = stackParent.readVar(varName, index);
-                if (value instanceof InternalError) {
-                    this.raise("internal error");
-                } else if (value instanceof IndexOutOfRange) {
-                    this.frame.pc--;
-                    this.raise("index out of range");
-                } else {
-                    this.save(idx, value);
-                }
+            case InstructionID.DECLARE: {
+                this.save(args[0], (args[1] as VariableValue).copyDecl());
                 break;
             }
-            case InstructionID.DECLARE_VAR:
-                this.frame.getVars().set(args[0] as string, args[1] as VariableValue);
-                break;
-            case InstructionID.ASSIGN_VAR: {
-                const v = this.frame.getVars().get(args[0] as string);
-                if (!v) {
-                    this.raise("ASSIGN_VAR does not exist");
-                    break;
-                }
+            case InstructionID.ASSIGN: {
                 const val = this.readVal(args[1]);
+
                 let index = args.length > 2 ? args[2] as number[] : undefined;
                 if (index) index = index.map((i) => this.readVal(i).getNumber());
                 const fieldIndex = args.length > 3 ? args[3] as number[] : undefined;
-                v.setVal(val.val, index, fieldIndex);
+                this.readVal(args[0]).setVal(val.val, index, fieldIndex);
                 break;
             }
-            case InstructionID.ASSIGN_VAR_SHARED: {
-                const v = this.moduleFrame.getVars().get(args[0] as string);
-                if (!v) {
-                    this.raise("ASSIGN_VAR_SHARED does not exist");
-                    break;
-                }
+            case InstructionID.COPY: {
                 const val = this.readVal(args[1]);
-                let index = args.length > 2 ? args[2] as number[] : undefined;
-                if (index) index = index.map((i) => this.readVal(i).getNumber());
-                const fieldIndex = args.length > 3 ? args[3] as number[] : undefined;
-                v.setVal(val.val, index, fieldIndex);
-                break;
-            }
-            case InstructionID.ASSIGN_ARG: {
-                const varName = this.frame.foreignArgNames[args[0] as number];
-                if (!this.frame.parent) {
-                    this.raise("ASSIGN_ARG at module level");
-                    break;
-                }
-                const v = this.frame.parent.getVars().get(varName);
-                if (!v) {
-                    this.raise("no variable");
-                    break;
-                }
-                const val = this.readVal(args[1]);
-                const index = args.length > 2 ? args[2] as number[] : null;
-                if (!index) v.setVal(val.val);
-                else {
-                    v.setVal(val.val, index.map((i) => this.readVal(i).getNumber()));
-                }
+                this.save(args[0], val.copySingle());
                 break;
             }
             case InstructionID.ADD: {
@@ -960,7 +1091,7 @@ export class Execution {
                 const f = new Frame();
                 f.parent = this.frame;
                 f.stackOffset = this.frame.stackOffset + args[1] as number;
-                f.foreignArgNames = args[2] as string[];
+                // f.foreignArgNames = args[2] as string[];
                 f.pc = args[0] as number;
                 this.frame = f;
                 break;
@@ -969,9 +1100,7 @@ export class Execution {
                 const f = new Frame();
                 f.parent = this.frame;
                 f.stackOffset = this.frame.stackOffset + args[1] as number;
-                f.foreignArgNames = args[2] as string[];
                 f.pc = args[0] as number;
-                f.vars = undefined;
                 this.frame = f;
                 break;
             }
@@ -979,8 +1108,6 @@ export class Execution {
                 const f = new Frame();
                 f.parent = this.frame;
                 f.stackOffset = this.frame.stackOffset + args[1] as number;
-                f.returnStackPos = args[2] as number;
-                f.foreignArgNames = args[3] as string[];
                 f.pc = args[0] as number;
                 this.frame = f;
                 break;
@@ -992,11 +1119,6 @@ export class Execution {
             case InstructionID.RETURN: {
                 this.frame = this.frame.parent as Frame;
                 this.frame.pc = args[0] as number;
-                break;
-            }
-            case InstructionID.SET_RETURN: {
-                const f = this.frame.parent as Frame;
-                this.stack[this.frame.returnStackPos as number] = this.readVal(args[0]).copySingle();
                 break;
             }
             case InstructionID.ABS: {

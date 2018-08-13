@@ -110,7 +110,8 @@ export class Val {
     public varName: string;
     public dimmed?: boolean;
     public shared?: boolean;
-    // When true, this is a variable whos value is known.
+    public global?: boolean;
+    // When true, this is a variable whose value is known.
     public stackOffset: number;
     public argIndex: number; // Non-null for variables which are arguments to subroutines.
     copy(): Val {
@@ -121,12 +122,12 @@ export class Val {
         if (this.isArrayArg) v.isArrayArg = this.isArrayArg;
         if (this.index) v.index = this.index;
         if (this.fieldBase) v.fieldBase = this.fieldBase;
-        if (this.numberValue) v.numberValue = this.numberValue;
-        if (this.stringValue) v.stringValue = this.stringValue;
+        if (this.numberValue !== undefined) v.numberValue = this.numberValue;
+        if (this.stringValue !== undefined) v.stringValue = this.stringValue;
         if (this.varName) v.varName = this.varName;
         if (this.shared) v.shared = this.shared;
         if (this.dimmed) v.dimmed = this.dimmed;
-        if (this.stackOffset) v.stackOffset = this.stackOffset;
+        if (this.stackOffset !== undefined) v.stackOffset = this.stackOffset;
         if (this.argIndex !== undefined) v.argIndex = this.argIndex;
         return v;
     }
@@ -1429,6 +1430,15 @@ class Parser implements ILocator {
             }
         }
     }
+    swapStmt() {
+        this.expectIdent("SWAP");
+        const a = this.varname(true);
+        if (!a) return;
+        if (!this.expectOp(",")) return;
+        const b = this.varname(true);
+        if (!b) return;
+        this.ctx.op("SWAP", [a, b]);
+    }
     coord(): Coord | undefined {
         let step = false;
         if (this.nextIf("STEP")) {
@@ -1609,6 +1619,7 @@ class Parser implements ILocator {
                 case "FOR": this.forStmt(); break;
                 case "NEXT": this.nextStmt(); break;
                 case "EXIT": this.exitStmt(); break;
+                case "SWAP": this.swapStmt(); break;
                 case "COLOR": this.colorStmt(); break;
                 case "PRINT": case "?": this.printStmt(); break;
                 case "LINE": this.lineStmt(); break;
@@ -1731,7 +1742,6 @@ class Parser implements ILocator {
 // SGN Function
 // SHARED Statement
 // STATIC Statement
-// SWAP Statement
 // TYPE Statement
 // UCASE$ Function
 // STOP Statement

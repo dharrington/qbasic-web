@@ -18,13 +18,15 @@ import * as vm from "./vm";
 export class DebugPC implements vm.IVirtualPC {
     public textOutput: string = "";
     public echo: boolean;
-    public inputResult: string = "42";
+    public inputResult: string[] = [];
+    private nextInput = 0;
     print(text: string) {
         if (this.echo) console.log(text);
         this.textOutput += text;
     }
     input(complete: (text: string) => void) {
-        complete(this.inputResult);
+        if (this.nextInput >= this.inputResult.length) complete("");
+        else complete(this.inputResult[this.nextInput++]);
     }
     setForeColor(fc: number) { }
     setBackColor(bc: number) { }

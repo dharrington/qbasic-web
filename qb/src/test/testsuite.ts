@@ -26,19 +26,39 @@ let failCount = 0;
 class Expectation {
     public output?: string;
     public exception?: string;
+    public compileErrorLines: number[] = [];
     constructor() { }
+}
+function scanREMs(programText: string, command: string): string[] {
+    const all: string[] = [];
+    const re = new RegExp(`REM ${command} (.*)`, "g");
+    while (1) {
+        const m = re.exec(programText);
+        if (!m) break;
+        all.push(m[1].trim());
+    }
+    return all;
 }
 function testProgram(programPath: string) {
     console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
+    const pc = new DebugPC();
     const exp = new Expectation();
     {
-        const m = /REM exception (.*)/.exec(fileText);
-        if (m) {
-            exp.exception = m[1].trim();
+        const ex = scanREMs(fileText, "exception");
+        if (ex.length === 1) {
+            exp.exception = ex[0];
         }
     }
+    pc.inputResult = scanREMs(fileText, "input");
+    const fileLines = fileText.split("\n");
+    for (let i = 0; i < fileLines.length; i++) {
+        if (/'COMPILE_ERROR/.test(fileLines[i])) {
+            exp.compileErrorLines.push(i);
+        }
+    }
+
 
     const parts = fileText.split("\nREM output\n");
     let programText = fileText;
@@ -46,7 +66,7 @@ function testProgram(programPath: string) {
         programText = parts[0];
         exp.output = parts[1];
     }
-    runSuccess(programText, exp);
+    runSuccess(programText, exp, pc);
 }
 function testCases(caseDir = process.argv[2]) {
     for (const f of fs.readdirSync(caseDir)) {
@@ -69,20 +89,44 @@ function addLineNumbersToSource(source: string): string {
     }
     return lines.join("\n");
 }
-function runSuccess(program: string, exp: Expectation) {
+function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
     const stepQuota = 10000;
 
     const tokens = lex(program);
     const ctx = new codegen.CodegenCtx();
     parse(ctx, tokens);
-    const pc = new DebugPC();
+    ctx.program().source = program;
+    const codeText = ctx.program().toString();
     const exe = new vm.Execution(ctx.program(), pc);
     if (ctx.errors().length > 0) {
-        console.log(`Compile errors in program:\n${addLineNumbersToSource(program)}\n----\n`);
-        for (const e of ctx.errors()) {
-            console.log(`  ${e}`);
+        let errorsOK = false;
+        if (exp.compileErrorLines) {
+            const wantLines = new Set(exp.compileErrorLines);
+            const foundLines = new Set();
+            for (const e of ctx.errorLocations()) {
+                foundLines.add(e.line);
+            }
+            errorsOK = true;
+            for (const want of wantLines) {
+                if (!foundLines.has(want)) {
+                    console.log(`Wanted compile error at line ${want}, but none was found`);
+                    errorsOK = false;
+                }
+            }
+            for (const found of foundLines) {
+                if (!wantLines.has(found)) {
+                    console.log(`Found compile error at line ${found}`);
+                    errorsOK = false;
+                }
+            }
         }
-        failCount++;
+        if (!errorsOK) {
+            console.log(`Compile errors in program:\n${addLineNumbersToSource(program)}\n----\n`);
+            for (const e of ctx.errors()) {
+                console.log(`  ${e}`);
+            }
+            failCount++;
+        }
         return;
     }
     exe.run(stepQuota);
@@ -126,8 +170,9 @@ ${visualizeWhitespace(exp.output.trimRight())}
 -------------------------------------------------------------------------------
 `);
     }
-    console.log(`Program code:
-${ctx.program().toString()}`);
+
+    console.log(`Debug dump:
+${exe.debugDump()}`);
     passCount++;
 }
 

@@ -1,15 +1,41 @@
 DECLARE SUB MYSUB (X() AS INTEGER)
+DECLARE SUB MUL (R,X,Y)
+DECLARE SUB MULADD (R,X,Y)
+DECLARE SUB PARAMS (x%, y AS INTEGER)
 
 DIM X(20) AS INTEGER
 X(20)=10
 X(19)=8
 MYSUB X()
+MUL Y, 5, 4
+PRINT Y
+MULADD Z, 5, 4
+PRINT Z
+
+PARAMS 1, 2
 
 SUB MYSUB (X() AS INTEGER)
   PRINT X(20)
   PRINT X%(19)
 END SUB
 
+SUB MUL (R#, X#, Y#)
+  R# = X# * Y#
+END SUB
+
+SUB MULADD (R#, X#, Y#)
+  MUL a#, X#, Y#
+  MUL b#, X#, Y#
+  R# = a# + b#
+END SUB
+
+SUB PARAMS (x%, y AS INTEGER)
+  PRINT x%;y%;y
+END SUB
+
 REM output
  10 
  8 
+ 20 
+ 40 
+ 1  2  2 
