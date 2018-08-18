@@ -190,6 +190,7 @@ export enum InstructionID {
     LCASE, // S S
     UCASE, // S S
     SPACE, // S S
+    LOG, // S
     NOP,
 }
 
@@ -503,7 +504,7 @@ export class Instruction {
                 return "S";
             case InstructionID.BRANCH:  // PC
                 return "PC";
-            case InstructionID.CALL_SUB:  // PC stack-size S[]
+            case InstructionID.CALL_SUB:  // PC stack-size
                 if (offset === 0) return "PC";
                 if (offset === 1) return "stacksize";
                 return "S";
@@ -593,6 +594,7 @@ export class Instruction {
             case InstructionID.LCASE:  // S S
             case InstructionID.UCASE:  // S S
             case InstructionID.SPACE:  // S S
+            case InstructionID.LOG:  // S
             case InstructionID.NOP:
                 if (this.args[offset] !== undefined) {
                     return "S";
@@ -710,13 +712,13 @@ class Frame {
 }
 
 export function toInt(v: number): number {
-    v = Math.trunc(v) % 65536;
+    v = Math.round(v) % 65536;
     if (v > 32767) v = -65536 + v;
     return v;
 }
 
 export function toLong(v: number): number {
-    v = Math.trunc(v) % 4294967296;
+    v = Math.round(v) % 4294967296;
     if (v > 2147483647) v = -4294967296 + v;
     return v;
 }
@@ -826,7 +828,12 @@ ${listing}
         this.inRun = true;
         // Run at most this many operations, so that we don't freeze the UI entirely.
         let i = 0;
-        for (i = 0; i < maxSteps && !this.exception && !this.waiting && this.step(); i++) {
+        for (i = 0; i < maxSteps && !this.exception && !this.waiting; i++) {
+            try {
+                if (!this.step()) break;
+            } catch (e) {
+                this.raise("internal error: " + e);
+            }
         }
         if (i === maxSteps) {
             this.vpc.sleep(0.001, () => {
@@ -1091,7 +1098,6 @@ ${listing}
                 const f = new Frame();
                 f.parent = this.frame;
                 f.stackOffset = this.frame.stackOffset + args[1] as number;
-                // f.foreignArgNames = args[2] as string[];
                 f.pc = args[0] as number;
                 this.frame = f;
                 break;
@@ -1356,6 +1362,10 @@ ${listing}
                 break;
             }
             case InstructionID.NOP: {
+                break;
+            }
+            case InstructionID.LOG: {
+                console.log(this.readVal(args[0]).strVal());
                 break;
             }
             case InstructionID.END: {

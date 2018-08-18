@@ -1,3 +1,4 @@
+DECLARE SUB PASSTOSUB (S AS snake)
 TYPE pos
   x AS INTEGER
   y AS INTEGER
@@ -16,5 +17,14 @@ X(3).head = 123
 X(3).name = "fred"
 X(3).pp.y = 987
 PRINT X(3).head; X(3).name; X(3).pp.y
+PASSTOSUB X()
+
+SUB PASSTOSUB (S() AS snake)
+  PRINT S(3).head; S(3).name; S(3).pp.y
+END SUB
+
 REM output
  123 fred 987 
+ 123 fred 987 
+
+

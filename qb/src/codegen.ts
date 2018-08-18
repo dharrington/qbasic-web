@@ -93,6 +93,7 @@ class RestoreInfo {
 // Data shared by all instances of CodegenCtx when parsing a program.
 class GlobalCtx {
     public functions = new Map<string, FunctionInfo>();
+    public builtinSubs = new Map<string, FunctionInfo>();
     public types: Map<string, Type> = new Map<string, Type>();
     public subs: Map<string, SubroutineInfo> = new Map<string, SubroutineInfo>();
     public constantVals = new Map<string, Val>();
@@ -113,6 +114,9 @@ class GlobalCtx {
     public constCount = 0;
 
     constructor() {
+        this.builtinSubs.set("__LOG",
+            FunctionInfo.builtin(new FunctionType(kIntType, [kStringType]), vm.InstructionID.LOG));
+
         this.functions.set("MID",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType, kLongType], 1), vm.InstructionID.MID));
         this.functions.set("RIGHT",
@@ -165,7 +169,6 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kStringType, [kIntType]), vm.InstructionID.SPACE));
         this.functions.set("PEEK",
             FunctionInfo.builtin(new FunctionType(kIntType, [kIntType]), vm.InstructionID.NOP));
-
         this.functions.set("FRE",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
@@ -599,7 +602,7 @@ export class CodegenCtx implements ICtx {
                 // TODO: Check types
                 const v = O[0];
                 const val = O[1];
-                this.assign(v, this.stackify(val).stackOffset);
+                this.assignVal(v, val);
                 return kNullVal;
             }
             case "ABS": {
@@ -865,6 +868,7 @@ export class CodegenCtx implements ICtx {
         this.fnInfo.blockInfo.endPC = this.instructionCount() - 1;
     }
     isSub(id: string): boolean {
+        if (this.g.builtinSubs.has(id)) return true;
         return this.g.subs.has(id);
     }
     isFunction(id: string): boolean {
@@ -876,17 +880,25 @@ export class CodegenCtx implements ICtx {
         return f.type;
     }
     callSub(id: Token, args: Val[]) {
+        const builtin = this.g.builtinSubs.get(id.text);
+        if (builtin) {
+            this.write(builtin.builtinOp as vm.InstructionID, ...args);
+            return;
+        }
         const sub = this.g.subs.get(id.text);
         if (!sub) {
             this.error("not a subroutine");
             return;
         }
         // TODO: check args
+        for (const arg of args) {
+            if (!arg) return;
+        }
+        args = this.stackifyAll(args);
         const callStackOffset = this.stackOffset;
         // Parameters are passed by reference.
         for (const arg of args) {
-            if (!arg) return;
-            const s = this.stackify(arg).stackOffset;
+            const s = arg.stackOffset;
             const addrS = this.stackOffset++;
             if (s & kConstBit) {
                 this.write(vm.InstructionID.COPY, addrS, s);
@@ -917,14 +929,16 @@ export class CodegenCtx implements ICtx {
         }
 
         // TODO: check args
-        // make the return variable
-        const callStackOffset = this.stackOffset;
-        const returnVal = this.newStackValue(f.type.resultType);
-
-        // Parameters are passed by reference.
         for (const arg of args) {
             if (!arg) return;
-            const s = this.stackify(arg).stackOffset;
+        }
+        args = this.stackifyAll(args);
+        const callStackOffset = this.stackOffset;
+        // make the return variable
+        const returnVal = this.newStackValue(f.type.resultType);
+        // Parameters are passed by reference.
+        for (const arg of args) {
+            const s = arg.stackOffset;
             const addrS = this.stackOffset++;
             if (s & kConstBit) {
                 this.write(vm.InstructionID.COPY, addrS, s);
@@ -1035,7 +1049,7 @@ export class CodegenCtx implements ICtx {
             }
         }
         this.ctrlFlowStack.pop();
-        if (flow.selectValue.stackOffset >= 0) {
+        if (flow.selectValue.stackOffset + 1 === this.reservedStackSlots) {
             this.reservedStackSlots--;
         }
     }
@@ -1045,7 +1059,7 @@ export class CodegenCtx implements ICtx {
             return;
         }
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kFOR);
-        this.assign(idx, this.stackify(from).stackOffset);
+        this.assignVal(idx, from);
         step = step ? this.stackify(step) : this.constNumber(1, idx.type);
         to = this.stackify(to);
         const condVal = this.newStackValue(kIntType);
@@ -1421,6 +1435,10 @@ export class CodegenCtx implements ICtx {
         allBlocks.sort((a, b) => a.startPc - b.startPc);
         return allBlocks;
     }
+    private assignVal(variable: Val, value: Val) {
+        const convertedValue = this.convert(value, variable.type);
+        this.assign(variable, this.stackify(convertedValue).stackOffset);
+    }
     private assign(variable: Val, stackPos: number) {
         let index: number[] | undefined;
         let fieldIndex: number[] | undefined;
@@ -1529,6 +1547,10 @@ export class CodegenCtx implements ICtx {
         }
         return undefined;
     }
+    private stackifyAll(args: Val[]): Val[] {
+        return args.map((v) => this.stackify(v));
+    }
+
     // Convert v to a value that is on the stack.
     private stackify(v: Val | undefined, reservedSlot = false): Val {
         if (!v) return kNullVal;

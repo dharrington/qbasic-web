@@ -106,12 +106,12 @@ export function lex(text: string): Token[] {
             eatSpace(s);
             if (s.text.length === 0) { break; }
             if (!matchToken(TokenType.kComment, /^'.*/, s) &&
-                !matchToken(TokenType.kComment, /^(REM\s|').*/, s)) {
+                !matchToken(TokenType.kComment, /^(REM(\s|$)|').*/, s)) {
                 const tok = matchToken(TokenType.kIdent, /^[a-zA-Z_][a-zA-Z0-9_]*/, s)
                     || matchToken(TokenType.kNumber,
                         /^(([0-9]+([.][0-9]*([ED][+-]?[0-9]+)?)?)|(\.[0-9]+([ED][+-]?[0-9]+)?))/, s)
                     || matchToken(TokenType.kNumber, /^&H[0-9A-F]+/, s)
-                    || matchToken(TokenType.kOp, /^(\=?(\=?>=?)|(\=?<[>=]?)|[()[\]:;&%$=,.#+*/\\?-])/, s)
+                    || matchToken(TokenType.kOp, /^(\=?(\=?>=?)|(\=?<[>=]?)|[()[!\]:;&%$=,.#+*/\\?-])/, s)
                     || matchToken(TokenType.kString, /^"([^"\\]|\\.)*"/, s);
                 if (tok) {
                     tokens.push(tok);
