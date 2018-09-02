@@ -14,13 +14,8 @@
 
 // codegen.ts - Generates code for QBasic programs.
 
-import {
-    basicType, Coord, ICtx, ILocator, kNullVal, kValTrue, Location, MVal, Token, Val, ValKind,
-} from "./parse";
-import {
-    BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType,
-    kSingleType, kStringType, sigilToBaseType, Type,
-} from "./types";
+import { basicType, Coord, ICtx, ILocator, kNullVal, Location, MVal, Token, Val, ValKind } from "./parse";
+import { BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 import * as vm from "./vm";
 
 // While writing the program, these bits are added to stack offsets to indicate the type of variable.
@@ -68,6 +63,7 @@ class BlockInfo {
     public startPc: number = -1;
     public endPC: number = -1;
     public argCount: number = 0;
+    public skipBranch: vm.Instruction | undefined;
     public declareInstructions: vm.Instruction[] = [];
 }
 class FunctionInfo {
@@ -135,6 +131,8 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.FIX));
         this.functions.set("INKEY",
             FunctionInfo.builtin(new FunctionType(kStringType, []), vm.InstructionID.INKEY));
+        this.functions.set("INPUT",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kIntType]), vm.InstructionID.INPUT_FUNC));
         this.functions.set("VAL",
             FunctionInfo.builtin(new FunctionType(kDoubleType, [kStringType]), vm.InstructionID.VAL));
         this.functions.set("STR",
@@ -161,6 +159,10 @@ class GlobalCtx {
             FunctionInfo.builtin(new FunctionType(kDoubleType, []), vm.InstructionID.TIMER));
         this.functions.set("LEN",
             FunctionInfo.builtin(new FunctionType(kLongType, [kStringType]), vm.InstructionID.LEN));
+        this.functions.set("LTRIM",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LTRIM));
+        this.functions.set("RTRIM",
+            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.RTRIM));
         this.functions.set("UCASE",
             FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.UCASE));
         this.functions.set("LCASE",
@@ -374,7 +376,7 @@ export class CodegenCtx implements ICtx {
         return v;
     }
     declConst(id: Token, ty: BaseType, value: Val) {
-        if (!value.isLiteral()) {
+        if (!value.isLiteral() && !value.isConst()) {
             this.error("cannot assign const to dynamic value");
             return;
         }
@@ -425,10 +427,11 @@ export class CodegenCtx implements ICtx {
         return Val.newField(field.name, field.type, v);
     }
 
-    dim(name: Token | string, size: Val[][] | undefined, ty: Type, shared: boolean) {
+    dim(name: Token | string, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean) {
         const nameText = name instanceof Token ? name.text : name as string;
         const loc = name instanceof Token ? name.loc : undefined;
-        if (this.dimVars.has(nameText)) {
+        const existingDefinition = this.dimVars.get(nameText);
+        if (existingDefinition !== undefined && !dynamic) {
             this.error("duplicate definition", loc);
             return;
         }
@@ -438,34 +441,77 @@ export class CodegenCtx implements ICtx {
                 return;
             }
         }
-        let numericSize: number[] | undefined;
-        if (size) {
-            numericSize = [];
-            for (const s of size) {
-                const sAsNumeric: number[] = [];
-                for (const sv of s) {
-                    if ((sv.isLiteral() || sv.isConst()) && sv.type.isNumeric()) {
-                        sAsNumeric.push(sv.numberValue);
-                    } else {
-                        this.error("expected constant numeric value", sv.loc());
-                    }
+        if (existingDefinition !== undefined) {
+            if (!existingDefinition.type.equals(ty)) {
+                this.error("mismatched types", loc);
+                return;
+            }
+            if (existingDefinition.size === undefined) {
+                if (size !== undefined) {
+                    this.error("dimension mismatch", loc);
+                    return;
                 }
-                numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
+            } else {
+                if (size === undefined || size.length != existingDefinition.size.length) {
+                    this.error("dimension mismatch", loc);
+                    return;
+                }
+            }
+            if (!existingDefinition.dynamic) {
+                this.error("array already dimensioned", loc);
+                return;
             }
         }
-        const v = Val.newVar(nameText, ty, numericSize);
-        if (!this.parent || shared) {
-            v.stackOffset = kGlobalBit | this.g.globalVarCount++;
-        } else {
-            v.stackOffset = kLocalBit | this.localVarCount++;
+
+        let numericSize: number[] | undefined;
+        let dynamicDims: Val[] = [];
+        let dynamicSize = false;
+        if (size) {
+            if (!dynamic) {
+                numericSize = [];
+                for (const s of size) {
+                    const sAsNumeric: number[] = [];
+                    for (const sv of s) {
+                        if ((sv.isLiteral() || sv.isConst()) && sv.type.isNumeric()) {
+                            sAsNumeric.push(sv.numberValue);
+                        } else if (sv.kind === ValKind.kUnspecifiedDimSize) {
+                            dynamicSize = true;
+                            sAsNumeric.push(0);
+                        } else {
+                            this.error("expected constant numeric value", sv.loc());
+                        }
+                    }
+                    numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
+                }
+            } else {
+                for (const s of size) {
+                    dynamicDims.push(s[s.length - 1]);
+                }
+            }
         }
-        v.dimmed = true;
-        if (shared) v.shared = true;
-        this.dimVars.set(nameText, v);
-        const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
-        vv.dims = numericSize;
-        // this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [name.text, vv]));
-        this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE, [v.stackOffset, vv]));
+        let v = existingDefinition;
+        if (!v) {
+            v = Val.newVar(nameText, ty, numericSize);
+            if (!this.parent || shared) {
+                v.stackOffset = kGlobalBit | this.g.globalVarCount++;
+            } else {
+                v.stackOffset = kLocalBit | this.localVarCount++;
+            }
+            v.dimmed = true;
+            if (dynamicSize) v.dynamic = true;
+            if (shared) v.shared = true;
+            this.dimVars.set(nameText, v);
+        }
+        if (!dynamic) {
+            const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
+            vv.dims = numericSize;
+            // this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [name.text, vv]));
+            this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE, [v.stackOffset, vv]));
+        } else {
+            const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
+            vv.dims = numericSize;
+            this.write(vm.InstructionID.DECLARE_REDIM, v.stackOffset, vv, ...dynamicDims);
+        }
     }
 
     binaryOpType(a: Type, b: Type): Type {
@@ -778,8 +824,13 @@ export class CodegenCtx implements ICtx {
         this.write(vm.InstructionID.EXIT_SUB);
     }
 
-    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx {
-        this.setEnd();
+    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[], singleLine: boolean): ICtx {
+        let skipBranch: vm.Instruction | undefined;
+        if (!singleLine) {
+            this.setEnd();
+        } else {
+            // skipBranch = this.emit(vm.InstructionID.BRANCH, 0/*filled in later*/);
+        }
         let fn = this.g.functions.get(id.text);
         if (!fn) {
             this.declFunction(id, sigil, returnType, args);
@@ -798,6 +849,7 @@ export class CodegenCtx implements ICtx {
         fnCtx.blockInfo = fn.blockInfo;
         fn.blockInfo.argCount = args.length + 1;
         fn.blockInfo.startPc = this.instructionCount();
+        if (skipBranch) fn.blockInfo.skipBranch = skipBranch;
 
         const retVal = Val.newVar(id.text, returnType);
         retVal.dimmed = true;
@@ -805,8 +857,8 @@ export class CodegenCtx implements ICtx {
         // fnCtx.stackOffset = this.stackOffset;
         fnCtx.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE, [retVal.stackOffset, vm.VariableValue.single(retVal.type, vm.zeroValue(retVal.type))]));
         fnCtx.dimVars.set(retVal.varName, retVal);
-        //fnCtx.dim(id, undefined, returnType, false);
-        //const retVal = fnCtx.dimVars.get(id.text);
+        // fnCtx.dim(id, undefined, returnType, false);
+        // const retVal = fnCtx.dimVars.get(id.text);
         // fnCtx.dimVars.set(retVal.varName, retVal);
         for (let i = 0; i < args.length; i++) {
             const a = args[i];
@@ -870,6 +922,9 @@ export class CodegenCtx implements ICtx {
     isSub(id: string): boolean {
         if (this.g.builtinSubs.has(id)) return true;
         return this.g.subs.has(id);
+    }
+    isConst(id: string): boolean {
+        return (this.parent && this.parent.isConst(id)) || this.constVars.has(id);
     }
     isFunction(id: string): boolean {
         return this.g.functions.has(id);
@@ -1058,10 +1113,10 @@ export class CodegenCtx implements ICtx {
             this.error("invalid index");
             return;
         }
+        to = this.stackify(to, true);
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kFOR);
         this.assignVal(idx, from);
         step = step ? this.stackify(step) : this.constNumber(1, idx.type);
-        to = this.stackify(to);
         const condVal = this.newStackValue(kIntType);
         const branch0 = this.emit(vm.InstructionID.BRANCH, 0);
         ctrlFlow.loopStart = this.instructionCount();
@@ -1204,7 +1259,7 @@ export class CodegenCtx implements ICtx {
         if (delay) this.write(vm.InstructionID.SLEEP, delay);
         else this.write(vm.InstructionID.SLEEP);
     }
-    pset(a: Coord, color: Val) {
+    pset(a: Coord, color?: Val) {
         if (!a) return;
         let x1: Val;
         let y1: Val;
@@ -1221,12 +1276,48 @@ export class CodegenCtx implements ICtx {
             y1 = a.y;
         }
 
-        const args: any[] = [x1, y1, null];
+        const args: any[] = [x1, y1, undefined];
         if (color) {
             args[2] = color;
         }
         this.write(vm.InstructionID.PSET, ...args);
     }
+    circle(center: Coord, radius: Val, color?: Val) {
+        let x: Val;
+        let y: Val;
+        if (center.step) {
+            const oldx = this.newStackValue(kIntType);
+            const oldy = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.GET_DRAW_POS, oldx, oldy);
+            x = this.newStackValue(kIntType);
+            y = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x, oldx, center.x);
+            this.write(vm.InstructionID.ADD, y, oldy, center.y);
+        } else {
+            x = center.x;
+            y = center.y;
+        }
+        this.write(vm.InstructionID.CIRCLE, x, y, radius, color);
+    }
+    paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal) {
+        // TODO: background
+        let x: Val;
+        let y: Val;
+        if (a.step) {
+            const oldx = this.newStackValue(kIntType);
+            const oldy = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.GET_DRAW_POS, oldx, oldy);
+            x = this.newStackValue(kIntType);
+            y = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x, oldx, a.x);
+            this.write(vm.InstructionID.ADD, y, oldy, a.y);
+        } else {
+            x = a.x;
+            y = a.y;
+        }
+        this.write(vm.InstructionID.PAINT, x, y, paintColor, borderColor);
+    }
+
     line(a: Coord, b: Coord, color: Val, option: string, style?: Val) {
         let x1: Val;
         let y1: Val;
@@ -1275,6 +1366,64 @@ export class CodegenCtx implements ICtx {
         }
         this.write(vm.InstructionID.LINE, ...args);
     }
+    draw(expr: Val) {
+        this.write(vm.InstructionID.DRAW, expr);
+    }
+    getGraphics(a: Coord, b: Coord, id: Token) {
+        let x1: Val;
+        let y1: Val;
+        if (a.step) {
+            const oldx = this.newStackValue(kIntType);
+            const oldy = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.GET_DRAW_POS, oldx, oldy);
+            x1 = this.newStackValue(kIntType);
+            y1 = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x1, oldx, a.x);
+            this.write(vm.InstructionID.ADD, y1, oldy, a.y);
+        } else {
+            x1 = a.x;
+            y1 = a.y;
+        }
+        let x2: Val;
+        let y2: Val;
+        if (b.step) {
+            x2 = this.newStackValue(kIntType);
+            y2 = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x2, x1, b.x);
+            this.write(vm.InstructionID.ADD, y2, y1, b.y);
+        } else {
+            x2 = b.x;
+            y2 = b.y;
+        }
+        const variable = this.findVariable(id.text, BaseType.kNone);
+        if (!variable) {
+            this.error("undefined variable", id.loc);
+            return;
+        }
+        this.write(vm.InstructionID.GET_GRAPHICS, x1, y1, x2, y2, variable);
+    }
+    putGraphics(a: Coord, id: Token) {
+        let x1: Val;
+        let y1: Val;
+        if (a.step) {
+            const oldx = this.newStackValue(kIntType);
+            const oldy = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.GET_DRAW_POS, oldx, oldy);
+            x1 = this.newStackValue(kIntType);
+            y1 = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x1, oldx, a.x);
+            this.write(vm.InstructionID.ADD, y1, oldy, a.y);
+        } else {
+            x1 = a.x;
+            y1 = a.y;
+        }
+        const variable = this.findVariable(id.text, BaseType.kNone);
+        if (!variable) {
+            this.error("undefined variable", id.loc);
+            return;
+        }
+        this.write(vm.InstructionID.PUT_GRAPHICS, x1, y1, variable);
+    }
     screen(id: Val) {
         if (!id || !id.type.isNumeric()) {
             this.error("expected number");
@@ -1315,6 +1464,35 @@ export class CodegenCtx implements ICtx {
                 b.endPC += count;
             }
         }
+    }
+    moveBlockToEnd(block: BlockInfo) {
+        const prog = this.program();
+        const newStart = this.g.program.inst.length;
+        const newEnd = newStart + (block.endPC - block.startPc);
+        const deltaPC = newStart - block.startPc;
+        for (let i = block.startPc; i <= block.endPC; i++) {
+            prog.inst.push(prog.inst[i]);
+            prog.inst[i] = new vm.Instruction(vm.InstructionID.NOP, []);
+        }
+
+        for (let i = 0; i < prog.inst.length; i++) {
+            const inst = prog.inst[i];
+            if (!vm.BranchInstructions.has(inst.id)) continue;
+            const n = inst.args[0] as number;
+            if (n >= block.startPc && n <= block.endPC) {
+                inst.args[0] += deltaPC;
+            }
+        }
+
+        for (let i = block.startPc; i <= block.endPC; i++) {
+            const line = this.g.program.instToLine.get(i);
+            if (line !== undefined) {
+                this.g.program.instToLine.delete(i);
+                this.g.program.instToLine.set(i + deltaPC, line);
+            }
+        }
+        block.startPc = newStart;
+        block.endPC = newEnd;
     }
     insertDeclareInstructions(pos: number, declares: vm.Instruction[]) {
         this.insertInstructions(pos, declares.length);
@@ -1379,10 +1557,26 @@ export class CodegenCtx implements ICtx {
             }
             g.inst.args[0] = pc;
         }
+
+        let allBlocks = this.allBlocks();
+
+        // Some blocks intersect with the main block. Move them to the end and re-sort blocks.
+        for (const b of allBlocks.slice(1)) {
+            if (b.startPc <= this.blockInfo.endPC) {
+                this.moveBlockToEnd(b);
+            }
+        }
+        allBlocks = this.allBlocks();
+
+        for (const b of allBlocks) {
+            if (b.skipBranch) {
+                b.skipBranch.args[0] = b.endPC + 1;
+            }
+        }
+
         // DECLARE_VAR instructions need to be first in the main module, and in each sub/function.
         // Insert these instructions now, starting with the last block.
         // This is only safe at the end of finalize, since some instruction indices are not updated.
-        const allBlocks = this.allBlocks();
         for (let i = allBlocks.length - 1; i >= 0; i--) {
             const b = allBlocks[i];
             if (b.declareInstructions.length) {
@@ -1558,7 +1752,12 @@ export class CodegenCtx implements ICtx {
         if (constVal !== undefined) {
             return constVal;
         }
-        if (v.isStackValue()) return v;
+        if (v.isStackValue()) {
+            if (!reservedSlot || reservedSlot && v.stackOffset < this.reservedStackSlots) return v;
+            const stackOffset = this.reservedStackSlots++;
+            this.write(vm.InstructionID.COPY, stackOffset, v.stackOffset);
+            return Val.newStackValue(v.type, stackOffset);
+        }
         if (v.isVar() && !v.global && !v.index && !v.isField()) {
             return v;
         }
@@ -1614,6 +1813,12 @@ export class CodegenCtx implements ICtx {
                 lhs.numberValue = constResult.numberValue;
                 return undefined;
             }
+        }
+        if (id === vm.InstructionID.COPY && args[0] === args[1]) {
+            return undefined;
+        }
+        if (id === vm.InstructionID.ASSIGN && args[0] === args[1] && args[2] === undefined && args[3] === undefined) {
+            return undefined;
         }
         if (id === vm.InstructionID.BRANCH_IFNOT) { // optimize for fun
             const v = args[1] as Val;

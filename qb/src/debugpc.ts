@@ -19,6 +19,7 @@ export class DebugPC implements vm.IVirtualPC {
     public textOutput: string = "";
     public echo: boolean;
     public inputResult: string[] = [];
+    public graphicCalls: string[] = [];
     private nextInput = 0;
     print(text: string) {
         if (this.echo) console.log(text);
@@ -30,8 +31,29 @@ export class DebugPC implements vm.IVirtualPC {
     }
     setForeColor(fc: number) { }
     setBackColor(bc: number) { }
-    pset(x: number, y: number, color?: number) { }
-    line(x1: number, y1: number, x2: number, y2: number, color?: number) { }
+    pset(x: number, y: number, color?: number) {
+        const colorStr = color !== undefined ? ` ${color}` : "";
+        this.graphicCalls.push(`PSET ${x} ${y}${colorStr}`);
+    }
+    line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: vm.LineType, style: number) {
+        const colorStr = color !== undefined ? ` ${color}` : "";
+        this.graphicCalls.push(`LINE ${x1} ${y1} ${x2} ${y2}${colorStr}`);
+    }
+    circle(x: number, y: number, radius: number, color: number | undefined) {
+        const colorStr = color !== undefined ? `${color}` : "NA";
+        this.graphicCalls.push(`CIRCLE ${x} ${y} ${radius} ${colorStr}`);
+    }
+    paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) {
+        const paintColorStr = paintColor !== undefined ? `${paintColor}` : "NA";
+        const borderColorStr = borderColor !== undefined ? `${borderColor}` : "NA";
+        this.graphicCalls.push(`PAINT ${x} ${y} ${paintColorStr} ${borderColorStr}`);
+    }
+    draw(currentX: number, currentY: number, instructions: vm.DrawInstruction[]) {
+        const text = instructions.map((inst) => {
+            return [vm.DrawInstructionID[inst.id], inst.a, inst.b, inst.c, (inst.noDraw ? "nodraw" : "") + (inst.returnWhenDone ? "returnWhenDone" : "")].join(",");
+        }).join("; ");
+        this.graphicCalls.push(`DRAW ${text}`);
+    }
     locate(x?: number, y?: number) { }
     screen(id: number) { }
     resetPalette() { }
@@ -40,5 +62,13 @@ export class DebugPC implements vm.IVirtualPC {
         done();
     }
     inkey(): string { return ""; }
+    inkeyWait(n: number, callback: (result: string) => void) {
+        callback("");
+    }
     cls() { }
+    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
+        return undefined;
+    }
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) {
+    }
 }

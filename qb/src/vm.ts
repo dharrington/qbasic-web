@@ -14,6 +14,7 @@
 
 // vm.ts implements the virtual machine that runs programs.
 
+import { AssertionError } from "assert";
 import { BaseType, baseTypeToSigil, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 
 export const kGlobalBit = 0x80000000;
@@ -23,15 +24,26 @@ export function globalAddr(offset: number): number {
 export function globalAddrToOffset(addr: number): number {
     return addr ^ kGlobalBit;
 }
+export enum LineType {
+    kLine,
+    kBox,
+    kFilledBox,
+}
 
 // The virtual computer on which the VM executes.
 export interface IVirtualPC {
     print(text: string);
     input(completed: (text: string) => void);
+    inkeyWait(n: number, callback: (result: string) => void);
     setForeColor(fc: number);
     setBackColor(bc: number);
-    line(x1: number, y1: number, x2: number, y2: number, color?: number);
+    line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number);
+    circle(x: number, y: number, radius: number, color: number | undefined);
+    paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined);
     pset(x: number, y: number, color?: number);
+    draw(currentX: number, currentY: number, instructions: DrawInstruction[]);
+    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined;
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string);
     locate(x?: number, y?: number);
     screen(id: number);
     resetPalette();
@@ -39,6 +51,154 @@ export interface IVirtualPC {
     sleep(delay: number, done);
     inkey(): string;
     cls();
+}
+
+export enum DrawInstructionID {
+    kMove, // a=direction. 0=up, 1=upright ...; b=distance
+    kMoveXY, // a=x, b=y
+    kRotation, // a=angle*90
+    kTurn, // a=angle
+    kColor, // a=color
+    kScale, // a=scale
+    kPaint, // a=fill,b=border
+}
+export class DrawInstruction {
+    public noDraw?: boolean;
+    public returnWhenDone?: boolean;
+    public id: DrawInstructionID;
+    public a?: number;
+    public b?: number;
+    public c?: number;
+
+    getPosition(oldX: number, oldY: number, rotation: number, scale: number): number[] {
+        const rotateScaleAdd = (dx, dy): number[] => {
+            const [c, s] = [Math.cos(rotation), Math.sin(rotation)];
+            return [oldX + scale * (dx * c - dy * s), oldY + scale * (dx * s + dy * c)];
+        };
+
+        if (this.id === DrawInstructionID.kMoveXY) {
+            if (this.c) {
+                const [dx, dy] = [(this.a as number), (this.b as number)];
+                return rotateScaleAdd(dx, dy);
+            }
+            return [this.a as number, this.b as number];
+        }
+        if (this.id === DrawInstructionID.kMove) {
+            const b = this.b as number;
+            switch (this.a) {
+                case 0: return rotateScaleAdd(0, -b);
+                case 1: return rotateScaleAdd(b, -b);
+                case 2: return rotateScaleAdd(b, 0);
+                case 3: return rotateScaleAdd(b, b);
+                case 4: return rotateScaleAdd(0, b);
+                case 5: return rotateScaleAdd(-b, b);
+                case 6: return rotateScaleAdd(-b, 0);
+                case 7: return rotateScaleAdd(-b, -b);
+            }
+            throw new AssertionError({ message: "invalid draw instruction" });
+        }
+        throw new AssertionError();
+    }
+}
+function parseDrawCommand(cmd: string): DrawInstruction[] | undefined {
+    const result: DrawInstruction[] = [];
+    let i = 0;
+    let inst = new DrawInstruction();
+    const eatSpace = () => {
+        while (i < cmd.length && cmd[i] === " ") {
+            ++i;
+        }
+    };
+    const readNum = (): number | undefined => {
+        eatSpace();
+        const m = /[+-]?\d+/.exec(cmd.slice(i));
+        if (!m) return undefined;
+        i += m[0].length;
+        return parseInt(m[0], 10) as number;
+    };
+    while (i < cmd.length) {
+        switch (cmd[i]) {
+            case "B":
+                inst.noDraw = true;
+                i++;
+                break;
+            case "N":
+                inst.returnWhenDone = true;
+                i++;
+                break;
+            case "U": case "D": case "L": case "R": case "E": case "F": case "G": case "H":
+                inst.id = DrawInstructionID.kMove;
+                inst.a = "UERFDGLH".indexOf(cmd[i++]);
+                inst.b = readNum();
+                if (inst.b === undefined) return undefined;
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "M":
+                i++;
+                inst.id = DrawInstructionID.kMoveXY;
+                eatSpace();
+                if (cmd[i] === "+" || cmd[i] === "-") {
+                    inst.c = 1;
+                }
+                inst.a = readNum();
+                eatSpace();
+                if (cmd[i++] !== ",") return undefined;
+                inst.b = readNum();
+                if (inst.a === undefined || inst.b === undefined) return undefined;
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "A":
+                i++;
+                inst.id = DrawInstructionID.kRotation;
+                inst.a = readNum();
+                if (inst.a === undefined) return undefined;
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "T":
+                i++;
+                inst.id = DrawInstructionID.kTurn;
+                if (cmd[i++] !== "A") return undefined;
+                inst.a = readNum();
+                if (inst.a === undefined) return undefined;
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "C":
+                i++;
+                inst.id = DrawInstructionID.kColor;
+                inst.a = readNum();
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "S":
+                i++;
+                inst.id = DrawInstructionID.kScale;
+                inst.a = readNum();
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case "P":
+                i++;
+                inst.id = DrawInstructionID.kPaint;
+                inst.a = readNum();
+                eatSpace();
+                if (cmd[i++] !== ",") return undefined;
+                inst.b = readNum();
+                result.push(inst);
+                inst = new DrawInstruction();
+                break;
+            case " ":
+                i++;
+                break;
+            default:
+                return undefined;
+            // TODO: X and =.
+        }
+    }
+    return result;
 }
 
 export class NullPC implements IVirtualPC {
@@ -54,7 +214,16 @@ export class NullPC implements IVirtualPC {
     setBackColor(bc: number) {
         throw new Error("not implemented");
     }
-    line(x1: number, y1: number, x2: number, y2: number, color?: number) {
+    line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number) {
+        throw new Error("not implemented");
+    }
+    circle(x: number, y: number, radius: number, color: number | undefined) {
+        throw new Error("not implemented");
+    }
+    paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) {
+        throw new Error("not implemented");
+    }
+    draw(currentX: number, currentY: number, instructions: DrawInstruction[]) {
         throw new Error("not implemented");
     }
     pset(x: number, y: number, color?: number) {
@@ -78,9 +247,16 @@ export class NullPC implements IVirtualPC {
     inkey(): string {
         throw new Error("not implemented");
     }
+    inkeyWait(n: number, callback: (result: string) => void) {
+        throw new Error("not implemented");
+    }
     cls() {
         throw new Error("not implemented");
     }
+    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
+        return undefined;
+    }
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) { }
 }
 
 function convertNumber(n: number, baseType: BaseType): number | string {
@@ -117,6 +293,7 @@ export enum InstructionID {
     // For instructions that write to a stack value, the output is the first parameter.
     ADDRESS, // S S
     INPUT, // InputSpec
+    INPUT_FUNC, // S S
     TO_INT, // S S
     TO_LONG, // S S
     TO_SINGLE, // S S
@@ -129,6 +306,7 @@ export enum InstructionID {
     EXIT_SUB, // <no parameters>
     RETURN, // PC
     DECLARE, // S V
+    DECLARE_REDIM, // S V S...
     LOAD, // S S [index] [fieldIndex]
     ASSIGN, // S S [index] [fieldIndex]
     COPY, // S S
@@ -166,6 +344,11 @@ export enum InstructionID {
     PALETTE, // [ S S ]
     GET_DRAW_POS, // S S
     LINE, // S S S S [S [OptionString [StyleString]]]
+    CIRCLE, // S S S S
+    PAINT, // S S S S
+    DRAW, // S
+    GET_GRAPHICS, // S S S S S
+    PUT_GRAPHICS, // S S S ActionVerb
     PSET, // S S [ S ]
     CLS, // <no parameters> (TODO)
     SCREEN, // S
@@ -187,6 +370,8 @@ export enum InstructionID {
     READ, // S BaseType
     RESTORE, // DP
     LEN, // S S
+    LTRIM, // S S
+    RTRIM, // S S
     LCASE, // S S
     UCASE, // S S
     SPACE, // S S
@@ -526,13 +711,22 @@ export class Instruction {
             case InstructionID.RESTORE:  // DP
                 return "DP";
             case InstructionID.LINE:  // S S S S [S [OptionString [StyleString]]]
-                if (offset <= 5) return "S";
-                if (offset === 6) return "option";
+                if (offset <= 4) return "S";
+                if (offset === 5) return "option";
                 return "style";
             case InstructionID.DECLARE:  // S V
                 if (offset === 0) return "S";
                 return "V";
+            case InstructionID.DECLARE_REDIM: // S V S...
+                if (offset === 1) return "V";
+                return "S";
+            case InstructionID.PUT_GRAPHICS: // S S S ActionVerb
+                if (offset < 3) return "S";
+                return "ActionVerb";
             case InstructionID.COPY: // S S
+            case InstructionID.CIRCLE: // S S S S
+            case InstructionID.PAINT: // S S S S
+            case InstructionID.DRAW: // S
             case InstructionID.ADDRESS:  // S S
             case InstructionID.TO_INT:  // S S
             case InstructionID.TO_LONG:  // S S
@@ -572,6 +766,7 @@ export class Instruction {
             case InstructionID.COLOR:  // S S
             case InstructionID.PALETTE:  // [ S S ]
             case InstructionID.GET_DRAW_POS:  // S S
+            case InstructionID.GET_GRAPHICS: // S S S S S
             case InstructionID.PSET:  // S S [ S ]
             case InstructionID.CLS:  // <no parameters> (TODO)
             case InstructionID.SCREEN:  // S
@@ -591,10 +786,13 @@ export class Instruction {
             case InstructionID.TIMER:  // S
             case InstructionID.RANDOMIZE:  // S
             case InstructionID.LEN:  // S S
+            case InstructionID.LTRIM:  // S S
+            case InstructionID.RTRIM:  // S S
             case InstructionID.LCASE:  // S S
             case InstructionID.UCASE:  // S S
             case InstructionID.SPACE:  // S S
             case InstructionID.LOG:  // S
+            case InstructionID.INPUT_FUNC: // S S
             case InstructionID.NOP:
                 if (this.args[offset] !== undefined) {
                     return "S";
@@ -673,33 +871,36 @@ export class Program {
         return "" + arg;
     }
     sourceListingWithByteCode(source?: string, instAnnotations?: Map<number, string>): string {
-        const lineToInst = new Map<number, number>();
-        for (const [i, l] of this.instToLine) {
-            const v = lineToInst.get(i);
-            if (v !== undefined) {
-                lineToInst.set(l, Math.min(i, v));
+        const lineToInst = new Map<number, Array<number>>();
+        let previousLine = 0;
+        for (let i = 0; i < this.inst.length; i++) {
+            let line: number | undefined = this.instToLine.get(i);
+            if (line === undefined) {
+                line = previousLine;
+            }
+            const current = lineToInst.get(line + 1);
+            if (current) {
+                lineToInst.set(line + 1, [current[0], i]);
             } else {
-                lineToInst.set(l, i);
+                lineToInst.set(line + 1, [i, i]);
             }
         }
         const sourceLines = (source || "").split("\n");
         const output: string[] = [];
         let instOffset = 0;
-        const addInstUntil = (offset) => {
-            while (instOffset < offset) {
+        const addInstRange = (min, max) => {
+            for (let instOffset = min; instOffset <= max; instOffset++) {
                 const annotation = instAnnotations && instAnnotations.get(instOffset) || "";
                 output.push(`${annotation}\t[${instOffset}]${this.inst[instOffset].toString(this)}`);
-                instOffset++;
             }
         };
         for (let i = 0; i < sourceLines.length; i++) {
-            const nextInst = lineToInst.get(i);
-            if (nextInst !== undefined) {
-                addInstUntil(nextInst);
+            const instRange = lineToInst.get(i);
+            if (instRange !== undefined) {
+                addInstRange(instRange[0], instRange[1]);
             }
             output.push(`${i}\t${sourceLines[i]}`);
         }
-        addInstUntil(this.inst.length);
         return output.join("\n");
     }
 }
@@ -798,7 +999,11 @@ ${listing}
     destroy() {
         this.exception = "destroyed";
     }
-    read(addr: number): any {
+    readValOrUndefined(addr: number | undefined): VariableValue | undefined {
+        if (addr === undefined) return undefined;
+        return this.read(addr);
+    }
+    read(addr: number): VariableValue {
         if (addr & kGlobalBit) {
             return this.stack[addr ^ kGlobalBit];
         } else {
@@ -807,9 +1012,6 @@ ${listing}
     }
     readShared(addr: number): any {
         return this.stack[addr];
-    }
-    readVal(addr: number): VariableValue {
-        return this.read(addr);
     }
     readValShared(addr: number): VariableValue {
         return this.readShared(addr);
@@ -881,9 +1083,9 @@ ${listing}
                 const fieldIndices = args[3] as number[] | undefined;
                 let index: number[] | undefined;
                 if (posStackIndices) {
-                    index = posStackIndices.map((i) => this.readVal(i).val as number);
+                    index = posStackIndices.map((i) => this.read(i).val as number);
                 }
-                const value = this.readVal(varOffset);
+                const value = this.read(varOffset);
                 if (index || fieldIndices) {
                     const v = value.valAtIndex(index, fieldIndices);
                     if (v instanceof InternalError) {
@@ -900,147 +1102,157 @@ ${listing}
                 break;
             }
             case InstructionID.ADDRESS: {
-                this.save(args[0], this.readVal(args[1]));
+                this.save(args[0], this.read(args[1]));
                 break;
             }
             case InstructionID.DECLARE: {
                 this.save(args[0], (args[1] as VariableValue).copyDecl());
                 break;
             }
+            case InstructionID.DECLARE_REDIM: {
+                let dims: number[] = [];
+                for (let i = 2; i < args.length; i++) {
+                    dims.push(this.read(args[i]).numVal());
+                }
+                const val = (args[1] as VariableValue).copyDecl();
+                val.dims = dims;
+                this.save(args[0], val);
+                break;
+            }
             case InstructionID.ASSIGN: {
-                const val = this.readVal(args[1]);
+                const val = this.read(args[1]);
 
                 let index = args.length > 2 ? args[2] as number[] : undefined;
-                if (index) index = index.map((i) => this.readVal(i).getNumber());
+                if (index) index = index.map((i) => this.read(i).getNumber());
                 const fieldIndex = args.length > 3 ? args[3] as number[] : undefined;
-                this.readVal(args[0]).setVal(val.val, index, fieldIndex);
+                this.read(args[0]).setVal(val.val, index, fieldIndex);
                 break;
             }
             case InstructionID.COPY: {
-                const val = this.readVal(args[1]);
+                const val = this.read(args[1]);
                 this.save(args[0], val.copySingle());
                 break;
             }
             case InstructionID.ADD: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.single(a.type, a.anyval() + b.anyval()));
                 break;
             }
             case InstructionID.SUB: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.single(a.type, a.anyval() - b.anyval()));
                 break;
             }
             case InstructionID.NEG: {
-                const a = this.readVal(args[1]);
+                const a = this.read(args[1]);
                 this.save(args[0], VariableValue.single(a.type, -a.anyval()));
                 break;
             }
             case InstructionID.MUL: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.single(a.type, a.anyval() * b.anyval()));
                 break;
             }
             case InstructionID.DIV: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newDouble(a.anyval() / b.anyval()));
                 break;
             }
             case InstructionID.IDIV: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newLong(Math.floor(a.anyval() / b.anyval())));
                 break;
             }
             case InstructionID.MOD: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newLong(Math.floor(a.anyval()) % Math.floor(b.anyval())));
                 break;
             }
             case InstructionID.EQ: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.val === b.val) ? -1 : 0));
                 break;
             }
             case InstructionID.NEQ: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.val !== b.val) ? -1 : 0));
                 break;
             }
             case InstructionID.GTE: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.anyval() >= b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.LTE: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.anyval() <= b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.GT: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.anyval() > b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.LT: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newInt((a.anyval() < b.anyval()) ? -1 : 0));
                 break;
             }
             case InstructionID.OR: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newLong(a.anyval() | b.anyval()));
                 break;
             }
             case InstructionID.AND: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newLong(a.anyval() & b.anyval()));
                 break;
             }
             case InstructionID.XOR: {
-                const a = this.readVal(args[1]);
-                const b = this.readVal(args[2]);
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
                 this.save(args[0], VariableValue.newLong(a.anyval() ^ b.anyval()));
                 break;
             }
             case InstructionID.NOT: {
-                const a = this.readVal(args[1]);
+                const a = this.read(args[1]);
                 this.save(args[0], VariableValue.newLong(~a.anyval()));
                 break;
             }
             case InstructionID.LOGICNOT: {
-                const a = this.readVal(args[1]);
+                const a = this.read(args[1]);
                 this.save(args[0], VariableValue.newLong(a.val ? 0 : -1));
                 break;
             }
             case InstructionID.TO_INT:
-                this.save(args[0], VariableValue.newInt(toInt(this.readVal(args[1]).val as number)));
+                this.save(args[0], VariableValue.newInt(toInt(this.read(args[1]).val as number)));
                 break;
             case InstructionID.TO_LONG:
-                this.save(args[0], VariableValue.newLong(toLong(this.readVal(args[1]).val as number)));
+                this.save(args[0], VariableValue.newLong(toLong(this.read(args[1]).val as number)));
                 break;
             case InstructionID.TO_SINGLE:
-                this.save(args[0], VariableValue.single(kSingleType, toInt(this.readVal(args[1]).val as number)));
+                this.save(args[0], VariableValue.single(kSingleType, toInt(this.read(args[1]).val as number)));
                 break;
             case InstructionID.TO_DOUBLE:
-                this.save(args[0], VariableValue.single(kDoubleType, toInt(this.readVal(args[1]).val as number)));
+                this.save(args[0], VariableValue.single(kDoubleType, toInt(this.read(args[1]).val as number)));
                 break;
             case InstructionID.PRINT: {
                 for (const arg of args) {
-                    const argVal = this.readVal(arg);
+                    const argVal = this.read(arg);
                     switch (argVal.type.type) {
                         case BaseType.kSingle: {
                             this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val as number)));
@@ -1059,8 +1271,18 @@ ${listing}
                 break;
             }
             case InstructionID.LOCATE: {
-                this.vpc.locate(args[0] !== undefined ? this.readVal(args[0]).anyval() : null,
-                    args[1] !== undefined ? this.readVal(args[1]).anyval() : null);
+                this.vpc.locate(args[0] !== undefined ? this.read(args[0]).anyval() : null,
+                    args[1] !== undefined ? this.read(args[1]).anyval() : null);
+                break;
+            }
+            case InstructionID.INPUT_FUNC: {
+                this.waiting = true;
+                const done = (result) => {
+                    this.save(args[0], VariableValue.single(kStringType, result));
+                    this.waiting = false;
+                    this.unpause();
+                };
+                this.vpc.inkeyWait(this.read(args[1]).numVal(), done);
                 break;
             }
             case InstructionID.INPUT: {
@@ -1085,7 +1307,7 @@ ${listing}
                 break;
             }
             case InstructionID.BRANCH_IFNOT: {
-                const val = this.readVal(args[1]);
+                const val = this.read(args[1]);
                 if (val.isZero()) {
                     this.frame.pc = args[0];
                 }
@@ -1128,7 +1350,7 @@ ${listing}
                 break;
             }
             case InstructionID.ABS: {
-                const val = this.readVal(args[1]).copySingle();
+                const val = this.read(args[1]).copySingle();
                 if (val.anyval() < 0) {
                     val.val = -val.anyval();
                 }
@@ -1136,10 +1358,10 @@ ${listing}
                 break;
             }
             case InstructionID.MID: {
-                const val = this.readVal(args[1]).copySingle();
-                const offset = this.readVal(args[2]);
+                const val = this.read(args[1]).copySingle();
+                const offset = this.read(args[2]);
                 if (args.length > 3) {
-                    val.val = (val.val as string).substr(Math.max(0, offset.numVal() - 1), this.readVal(args[3]).numVal());
+                    val.val = (val.val as string).substr(Math.max(0, offset.numVal() - 1), this.read(args[3]).numVal());
                 } else {
                     val.val = (val.val as string).substr(Math.max(0, offset.numVal() - 1));
                 }
@@ -1147,15 +1369,15 @@ ${listing}
                 break;
             }
             case InstructionID.LEFT: {
-                const val = this.readVal(args[1]).copySingle();
-                const n = Math.abs(this.readVal(args[2]).anyval());
+                const val = this.read(args[1]).copySingle();
+                const n = Math.abs(this.read(args[2]).anyval());
                 val.val = (val.val as string).substr(0, n);
                 this.save(args[0], val);
                 break;
             }
             case InstructionID.RIGHT: {
-                const val = this.readVal(args[1]).copySingle();
-                const n = Math.abs(this.readVal(args[2]).anyval());
+                const val = this.read(args[1]).copySingle();
+                const n = Math.abs(this.read(args[2]).anyval());
                 const str = (val.val as string);
                 if (str.length > n) {
                     val.val = str.substr(str.length - n);
@@ -1164,12 +1386,12 @@ ${listing}
                 break;
             }
             case InstructionID.CHR: {
-                const code = this.readVal(args[1]).val as number;
+                const code = this.read(args[1]).val as number;
                 this.save(args[0], VariableValue.single(kStringType, String.fromCharCode(code)));
                 break;
             }
             case InstructionID.ASC: {
-                const code = this.readVal(args[1]).val as string;
+                const code = this.read(args[1]).val as string;
                 this.save(args[0], VariableValue.newInt(code.charCodeAt(0)));
                 break;
             }
@@ -1181,8 +1403,8 @@ ${listing}
                 break;
             }
             case InstructionID.COLOR: {
-                const fc = Math.trunc(this.readVal(args[0]).numVal());
-                const bc = Math.trunc(this.readVal(args[1]).numVal());
+                const fc = Math.trunc(this.read(args[0]).numVal());
+                const bc = Math.trunc(this.read(args[1]).numVal());
                 if (fc >= 0) {
                     this.vpc.setForeColor(fc);
                 }
@@ -1195,8 +1417,8 @@ ${listing}
                 if (args.length < 2) {
                     this.vpc.resetPalette();
                 } else {
-                    const attr = Math.trunc(this.readVal(args[0]).numVal());
-                    const color = Math.trunc(this.readVal(args[1]).numVal());
+                    const attr = Math.trunc(this.read(args[0]).numVal());
+                    const color = Math.trunc(this.read(args[1]).numVal());
                     this.vpc.setPaletteAttribute(attr, color);
                 }
                 break;
@@ -1206,27 +1428,134 @@ ${listing}
                 this.save(args[1], VariableValue.newInt(this.lastPointY));
                 break;
             }
-            case InstructionID.LINE: {
-                const x1 = this.readVal(args[0]).numVal();
-                const y1 = this.readVal(args[1]).numVal();
-                const x2 = this.readVal(args[2]).numVal();
-                const y2 = this.readVal(args[3]).numVal();
+            case InstructionID.PAINT: {
+                const x = this.read(args[0]).numVal();
+                const y = this.read(args[1]).numVal();
+                let paintColor: number | undefined;
+                let borderColor: number | undefined;
+                if (args[2] !== undefined) paintColor = this.read(args[2]).numVal();
+                if (args[3] !== undefined) borderColor = this.read(args[3]).numVal();
+
+                this.vpc.paint(Math.trunc(x), Math.trunc(y), paintColor, borderColor);
+                this.lastPointX = Math.trunc(x);
+                this.lastPointY = Math.trunc(y);
+                break;
+            }
+            case InstructionID.CIRCLE: {
+                const x = this.read(args[0]).numVal();
+                const y = this.read(args[1]).numVal();
+                const r = this.read(args[2]).numVal();
                 let color: number | undefined;
-                if (args[4] !== null) {
-                    color = this.readVal(args[4]).numVal();
+                if (args[3] !== undefined) {
+                    color = this.read(args[3]).numVal();
                     color = Math.trunc(color as number);
                 }
-                this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), color);
+
+                this.vpc.circle(Math.trunc(x), Math.trunc(y), Math.trunc(r), color);
+                this.lastPointX = Math.trunc(x);
+                this.lastPointY = Math.trunc(y);
+                break;
+            }
+            case InstructionID.LINE: {
+                const x1 = this.read(args[0]).numVal();
+                const y1 = this.read(args[1]).numVal();
+                const x2 = this.read(args[2]).numVal();
+                const y2 = this.read(args[3]).numVal();
+                let color: number | undefined;
+                if (args[4] !== undefined) {
+                    color = this.read(args[4]).numVal();
+                    color = Math.trunc(color as number);
+                }
+                let type = LineType.kLine;
+                if (args[5] !== undefined) {
+                    if ((args[5] as string) === "B") {
+                        type = LineType.kBox;
+                    } else {
+                        type = LineType.kFilledBox;
+                    }
+                }
+                let style = 0xffff;
+                if (args[6] !== undefined) {
+                    style = this.read(args[6]).numVal();
+                }
+                this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), color, type, style);
                 this.lastPointX = Math.trunc(x2);
                 this.lastPointY = Math.trunc(y2);
                 break;
             }
+            case InstructionID.DRAW: {
+                const cmd = this.read(args[0]).strVal();
+                const instructions = parseDrawCommand(cmd);
+                if (instructions) this.vpc.draw(this.lastPointX, this.lastPointY, instructions);
+                else this.raise("invalid draw command");
+                break;
+            }
+            case InstructionID.GET_GRAPHICS: {
+                const x1 = this.read(args[0]).numVal();
+                const y1 = this.read(args[1]).numVal();
+                const x2 = this.read(args[2]).numVal();
+                const y2 = this.read(args[3]).numVal();
+                const arrayVar = this.read(args[4]);
+                const dims = arrayVar.dims;
+                if (!dims) {
+                    this.raise("invalid array");
+                    break;
+                }
+                if (dims.length !== 1) {
+                    this.raise("not implemented");
+                    break;
+                }
+                if (arrayVar.type !== kIntType) {
+                    this.raise("not implemented");
+                    break;
+                }
+                const data = this.vpc.getGraphics(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), dims[0] * 2);
+                if (!data) {
+                    this.raise("invalid call");
+                    break;
+                }
+                for (let i = 0; i < data.length; i += 2) {
+                    const a = data[i];
+                    const b = (i + 1) < data.length ? data[i + 1] : 0;
+                    arrayVar.setVal(a + (b << 8), [Math.trunc(i / 2)], undefined);
+                }
+                break;
+            }
+            case InstructionID.PUT_GRAPHICS: {
+                const x = this.read(args[0]).numVal();
+                const y = this.read(args[1]).numVal();
+                const arrayVar = this.read(args[2]);
+                const actionVerb = args[3];
+                const dims = arrayVar.dims;
+                if (!dims) {
+                    this.raise("invalid array");
+                    break;
+                }
+                if (dims.length !== 1) {
+                    this.raise("not implemented");
+                    break;
+                }
+                if (arrayVar.type !== kIntType) {
+                    this.raise("not implemented");
+                    break;
+                }
+                const data = new Uint8Array(dims[0] * 2);
+                for (let i = 0; i < data.length; i += 2) {
+                    const n = (arrayVar as any).arrayVals[Math.trunc(i / 2)] as number;
+                    data[i] = n % 256;
+                    if (i + 1 < data.length) {
+                        data[i + 1] = (n / 256) % 256;
+                    }
+                }
+                this.vpc.putGraphics(Math.trunc(x), Math.trunc(y), data, actionVerb);
+                break;
+            }
             case InstructionID.PSET: {
-                const x = this.readVal(args[0]).numVal();
-                const y = this.readVal(args[1]).numVal();
+                const x = this.read(args[0]).numVal();
+                const y = this.read(args[1]).numVal();
                 let color: number | undefined;
-                if (args[2] !== null) {
-                    color = this.readVal(args[2]).numVal();
+                if (args[2] !== undefined) {
+                    color = this.read(args[2]).numVal();
                     color = Math.trunc(color as number);
                 }
                 this.vpc.pset(Math.trunc(x), Math.trunc(y), color);
@@ -1239,12 +1568,12 @@ ${listing}
                 break;
             }
             case InstructionID.SCREEN: {
-                const id = this.readVal(args[0]).numVal();
+                const id = this.read(args[0]).numVal();
                 this.vpc.screen(Math.trunc(id));
                 break;
             }
             case InstructionID.SLEEP: {
-                const delay = this.readVal(args[0]).numVal();
+                const delay = this.read(args[0]).numVal();
                 this.waiting = true;
                 this.vpc.sleep(delay, () => {
                     this.waiting = false;
@@ -1257,55 +1586,55 @@ ${listing}
                 break;
             }
             case InstructionID.VAL: {
-                this.save(args[0], VariableValue.newDouble(parseFloat(this.readVal(args[1]).strVal())));
+                this.save(args[0], VariableValue.newDouble(parseFloat(this.read(args[1]).strVal())));
                 break;
             }
             case InstructionID.STR: {
-                this.save(args[0], VariableValue.single(kStringType, "" + this.readVal(args[1]).val));
+                this.save(args[0], VariableValue.single(kStringType, "" + this.read(args[1]).val));
                 break;
             }
             case InstructionID.TAN: {
-                this.save(args[0], VariableValue.newDouble(Math.tan(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.newDouble(Math.tan(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.SIN: {
-                this.save(args[0], VariableValue.newDouble(Math.sin(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.newDouble(Math.sin(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.COS: {
-                this.save(args[0], VariableValue.newDouble(Math.cos(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.newDouble(Math.cos(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.ATN: {
-                this.save(args[0], VariableValue.newDouble(Math.atan(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.newDouble(Math.atan(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.CINT: {
-                this.save(args[0], VariableValue.newInt(Math.round(toInt(this.readVal(args[1]).numVal()))));
+                this.save(args[0], VariableValue.newInt(Math.round(toInt(this.read(args[1]).numVal()))));
                 break;
             }
             case InstructionID.CLNG: {
-                this.save(args[0], VariableValue.newLong(Math.round(toLong(this.readVal(args[1]).numVal()))));
+                this.save(args[0], VariableValue.newLong(Math.round(toLong(this.read(args[1]).numVal()))));
                 break;
             }
             case InstructionID.CDBL: {
-                this.save(args[0], VariableValue.newDouble(this.readVal(args[1]).numVal()));
+                this.save(args[0], VariableValue.newDouble(this.read(args[1]).numVal()));
                 break;
             }
             case InstructionID.CSNG: {
-                this.save(args[0], VariableValue.single(kSingleType, this.readVal(args[1]).numVal()));
+                this.save(args[0], VariableValue.single(kSingleType, this.read(args[1]).numVal()));
                 break;
             }
             case InstructionID.EXP: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.exp(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.exp(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.FIX: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.trunc(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.trunc(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.INT: {
-                this.save(args[0], VariableValue.single(kDoubleType, Math.floor(this.readVal(args[1]).numVal())));
+                this.save(args[0], VariableValue.single(kDoubleType, Math.floor(this.read(args[1]).numVal())));
                 break;
             }
             case InstructionID.TIMER: {
@@ -1316,7 +1645,7 @@ ${listing}
                 break;
             }
             case InstructionID.RANDOMIZE: {
-                this.rnd.seed = toLong(this.readVal(args[0]).numVal());
+                this.rnd.seed = toLong(this.read(args[0]).numVal());
                 break;
             }
             case InstructionID.READ: {
@@ -1345,19 +1674,27 @@ ${listing}
                 break;
             }
             case InstructionID.LEN: {
-                this.save(args[0], VariableValue.newLong(this.readVal(args[1]).strVal().length));
+                this.save(args[0], VariableValue.newLong(this.read(args[1]).strVal().length));
+                break;
+            }
+            case InstructionID.LTRIM: {
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().trimLeft()));
+                break;
+            }
+            case InstructionID.RTRIM: {
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().trimRight()));
                 break;
             }
             case InstructionID.UCASE: {
-                this.save(args[0], VariableValue.newString(this.readVal(args[1]).strVal().toUpperCase()));
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().toUpperCase()));
                 break;
             }
             case InstructionID.LCASE: {
-                this.save(args[0], VariableValue.newString(this.readVal(args[1]).strVal().toLowerCase()));
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().toLowerCase()));
                 break;
             }
             case InstructionID.SPACE: {
-                const n = this.readVal(args[1]).numVal();
+                const n = this.read(args[1]).numVal();
                 this.save(args[0], VariableValue.newString(" ".repeat(n)));
                 break;
             }
@@ -1365,7 +1702,7 @@ ${listing}
                 break;
             }
             case InstructionID.LOG: {
-                console.log(this.readVal(args[0]).strVal());
+                console.log(this.read(args[0]).strVal());
                 break;
             }
             case InstructionID.END: {
@@ -1374,7 +1711,7 @@ ${listing}
             }
 
             default: {
-                console.log("Not implemented");
+                console.log("Not implemented: " + InstructionID[inst.id]);
                 break;
             }
         }

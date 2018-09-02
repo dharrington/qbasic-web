@@ -18,6 +18,7 @@ import { parse } from "../parse";
 import * as types from "../types";
 import * as vm from "../vm";
 
+import { AssertionError } from "assert";
 import * as fs from "fs";
 import * as path from "path";
 
@@ -27,6 +28,8 @@ class Expectation {
     public output?: string;
     public exception?: string;
     public compileErrorLines: number[] = [];
+    public psets: Array<{ x, y, color }> = [];
+    public graphics: string[];
     constructor() { }
 }
 function scanREMs(programText: string, command: string): string[] {
@@ -51,6 +54,7 @@ function testProgram(programPath: string) {
             exp.exception = ex[0];
         }
     }
+    exp.graphics = scanREMs(fileText, "graphics");
     pc.inputResult = scanREMs(fileText, "input");
     const fileLines = fileText.split("\n");
     for (let i = 0; i < fileLines.length; i++) {
@@ -58,7 +62,6 @@ function testProgram(programPath: string) {
             exp.compileErrorLines.push(i);
         }
     }
-
 
     const parts = fileText.split("\nREM output\n");
     let programText = fileText;
@@ -149,6 +152,13 @@ function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
     } else if (exp.output !== undefined && exp.output.trimRight() !== pc.textOutput) {
         console.log(`Program complete with incorrect output`);
         failed = true;
+    }
+    if (!failed && exp.graphics.length) {
+        const got = pc.graphicCalls.join("\n");
+        const want = exp.graphics.join("\n");
+        if (got !== want) {
+            console.log(`graphics output not correct:\n--- got ---\n${got}\n--- want ---\n${want}\n`);
+        }
     }
     if (!failed) {
         passCount++;

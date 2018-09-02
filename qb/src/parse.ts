@@ -12,12 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { lex, Location, Token, TokenType } from "./lex";
+import { Location, Token, TokenType } from "./lex";
+import { BaseType, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, sigilToBaseType, Type, UserTypeField } from "./types";
 export { Location, Token } from "./lex";
-import {
-    BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType,
-    kSingleType, kStringType, sigilToBaseType, Type, UserTypeField,
-} from "./types";
 
 export function basicType(b?: BaseType): Type | undefined {
     if (b === BaseType.kInt) return kIntType;
@@ -38,6 +35,7 @@ export enum ValKind {
     kCommaDelim,
     kSemicolonDelim,
     kArgument,
+    kUnspecifiedDimSize,
 }
 
 // A value as understood by the parser.
@@ -99,6 +97,11 @@ export class Val {
         v.kind = ValKind.kSemicolonDelim;
         return v;
     }
+    static newUnspecifiedDimSize(): Val {
+        const v = new Val();
+        v.kind = ValKind.kUnspecifiedDimSize;
+        return v;
+    }
     public kind: ValKind = 0;
     public type: Type;
     public size: number[];
@@ -109,6 +112,7 @@ export class Val {
     public stringValue: string;
     public varName: string;
     public dimmed?: boolean;
+    public dynamic?: boolean;
     public shared?: boolean;
     public global?: boolean;
     // When true, this is a variable whose value is known.
@@ -178,16 +182,16 @@ export interface ICtx {
     data(dataArray: Val[]);
     read(args: Val[]);
     restore(label: number | string);
-    variable(varName: Token, sigil: BaseType, defaultType?: Type): Val | undefined;
+    variable(varName: Token, sigil: BaseType, defaultType?: Type): MVal;
     declConst(id: Token, ty: BaseType, value: Val);
-    index(v: Val, idx: Val[]): Val | undefined;
+    index(v: Val, idx: Val[]): MVal;
     // x.field
-    indexField(v: Val, idx: Token): Val | undefined;
-    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean);
+    indexField(v: Val, idx: Token): MVal;
+    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean);
     op(name: string, operands: Val[]): MVal;
     sub(id: Token, args: Val[]): ICtx;
     subExit();
-    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[]): ICtx;
+    functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[], singleLine: boolean): ICtx;
     functionExit();
     declArg(id: Token, isArray: boolean, ty: Type | undefined, dimmedType: boolean): Val;
     endSub();
@@ -195,6 +199,7 @@ export interface ICtx {
     declSub(id: Token, args: Val[]);
     declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]);
     isSub(id: string): boolean;
+    isConst(id: string): boolean;
     lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]);
     callFunction(id: string, args: Val[]): MVal;
@@ -222,7 +227,12 @@ export interface ICtx {
     gosub(token: Token, lbl: number | string);
     color(fore?: Val, back?: Val);
     line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val);
-    pset(a: Coord, color: Val | undefined);
+    circle(center: Coord, radius: Val, color?: Val);
+    paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal);
+    draw(expr: Val);
+    getGraphics(a: Coord, b: Coord, id: Token);
+    putGraphics(a: Coord, id: Token);
+    pset(a: Coord, color: MVal);
     locate(x?: Val, y?: Val); // TODO: more parameters
     screen(id: Val);
     palette(attr?: Val, col?: Val);
@@ -414,7 +424,7 @@ class Parser implements ILocator {
         return true;
     }
 
-    maybeStringLiteral(): Val | undefined {
+    maybeStringLiteral(): MVal {
         const tok = this.tok();
         if (tok.id === TokenType.kString) {
             this.next();
@@ -423,7 +433,7 @@ class Parser implements ILocator {
         return undefined;
     }
 
-    abs(): Val | undefined {
+    abs(): MVal {
         this.expectIdent("ABS");
         const args = this.callArgsWithTypes([kDoubleType]);
         if (!args) return undefined;
@@ -456,7 +466,7 @@ class Parser implements ILocator {
         return this.ctx.callFunction(id, args);
     }
 
-    maybeNumberLiteral(): Val | undefined {
+    maybeNumberLiteral(): MVal {
         let idx = 0;
         if (this.tok().isOp("-")) {
             idx = 1;
@@ -561,12 +571,12 @@ class Parser implements ILocator {
         return BaseType.kNone;
     }
 
-    maybeVarname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
+    maybeVarname(allowIndex?: boolean): MVal { // <ident>[type-sigil]
         if (this.tok().id !== TokenType.kIdent) return undefined;
         return this.varname(allowIndex);
     }
 
-    maybeArrayReference(): Val | undefined { // X%()
+    maybeArrayReference(): MVal { // X%()
         if (this.tok().id !== TokenType.kIdent) return undefined;
         const oldTokenIndex = this.tokenIndex;
         const id = this.expectIdent() as Token;
@@ -579,7 +589,7 @@ class Parser implements ILocator {
         return this.ctx.variable(id, sigil, undefined);
     }
 
-    varname(allowIndex?: boolean): Val | undefined { // <ident>[type-sigil]
+    varname(allowIndex?: boolean): MVal { // <ident>[type-sigil]
         const id = this.expectIdent();
         if (!id) return undefined;
         const sig = this.maybeSigil();
@@ -610,8 +620,14 @@ class Parser implements ILocator {
         return [];
     }
     sizeOrRange(): Val[] | undefined {
+        if (this.tok().isIdent() && !this.ctx.isConst(this.tok().text)) {
+            this.next();
+            // DIM statements can have arbitrary identifiers for size parameters.
+            // These imply a later REDIM will specify the size.
+            return [Val.newUnspecifiedDimSize()];
+        }
         const i = this.numericExpr();
-        if (!i) { // TODO: CONST
+        if (!i) {
             this.error("expected number");
             return undefined;
         }
@@ -638,36 +654,27 @@ class Parser implements ILocator {
         return result;
     }
 
-    dimStmt() { // DIM [SHARED] <ident> [AS <type>]
-        this.expectIdent("DIM");
+    dimStmt() { // [DIM|REDIM] [SHARED] <ident> [AS <type>]
+        const redim = this.nextIf("REDIM");
+        if (!redim) this.expectIdent("DIM");
         const shared = this.nextIf("SHARED");
-        let id = this.expectIdent();
-        let sigil = this.maybeSigil();
-        if (!id) return;
-        let size = this.maybeArraySize();
         while (true) {
+            const id = this.expectIdent();
+            const sigil = this.maybeSigil();
+            if (!id) return;
+            const size = this.maybeArraySize();
             let ty = this.defaultType(id.text, sigil);
             if (this.nextIf("AS")) {
                 const result = this.typename();
                 if (!result) return;
                 ty = result;
             }
-            this.ctx.dim(id, size, ty, shared !== undefined);
-            if (this.tok().isOp(",")) {
-                ++this.tokenIndex;
-                id = this.expectIdent();
-                size = this.maybeArraySize();
-                if (!id) {
-                    this.eatUntilNewline();
-                    break;
-                }
-                continue;
-            }
-            break;
+            this.ctx.dim(id, size, ty, shared !== undefined, redim !== undefined);
+            if (!this.nextIf(",")) break;
         }
-        return true;
     }
-    expr6(): Val | undefined {
+
+    expr6(): MVal {
         if (this.nextIf("(")) {
             const expr = this.expr();
             if (this.expectOp(")")) return expr;
@@ -692,7 +699,7 @@ class Parser implements ILocator {
     }
     // There are many layers to QBasic's operator precedence, which implies many functions for a recursive descent
     // parser. This template is used to create methods for most operators.
-    binaryExprTemplate(ops: string[], nextFunc: () => Val): Val | undefined {
+    binaryExprTemplate(ops: string[], nextFunc: () => Val): MVal {
         let lhs = nextFunc();
         while (lhs) {
             const op = this.tok();
@@ -718,7 +725,7 @@ class Parser implements ILocator {
     expr3 = () => this.binaryExprTemplate(["MOD", "\\"], this.expr4.bind(this));
     expr2 = () => this.binaryExprTemplate(["+", "-"], this.expr3.bind(this));
     expr1 = () => this.binaryExprTemplate([">", "<", ">=", "<=", "=", "<>"], this.expr2.bind(this));
-    exprL6(): Val | undefined {
+    exprL6(): MVal {
         while (!this.isEol()) {
             if (this.nextIf("NOT")) {
                 const rhs = this.exprL6();
@@ -734,10 +741,10 @@ class Parser implements ILocator {
     exprL2 = () => this.binaryExprTemplate(["EQV"], this.exprL3.bind(this));
     exprL1 = () => this.binaryExprTemplate(["IMP"], this.exprL2.bind(this));
 
-    expr(): Val | undefined {
+    expr(): MVal {
         return this.exprL1();
     }
-    numericExpr(): Val | undefined {
+    numericExpr(): MVal {
         const v = this.expr();
         if (v && v.type && !v.type.isNumeric()) {
             this.error("expected numeric");
@@ -745,39 +752,56 @@ class Parser implements ILocator {
         }
         return v;
     }
+    stringExpr(): MVal {
+        const v = this.expr();
+        if (v && v.type && !v.type.isString()) {
+            this.error("expected string expression");
+            return undefined;
+        }
+        return v;
+    }
     printStmt() {
         if (this.nextIf("PRINT")) { } else this.expectOp("?");
+        if (this.tok().isOp("#")) { // TODO
+            this.eatUntilNewline();
+            return;
+        }
         if (this.nextIf("USING")) {            // TODO:
             this.eatUntilNewline();
             return;
         }
         const vals: Val[] = [];
+        let readyForExpression = true;
         while (!this.isEol()) {
+            if (this.tok().isOp(",")) {
+                this.next();
+                vals.push(Val.newCommaDelim());
+                readyForExpression = true;
+                continue;
+            } else if (this.tok().isOp(";")) {
+                this.next();
+                vals.push(Val.newSemicolonDelim());
+                readyForExpression = true;
+                continue;
+            }
+            if (!readyForExpression) {
+                break;
+            }
             const v = this.expr();
             if (!v) {
                 this.eatUntilNewline();
                 return true;
             }
             vals.push(v);
-            if (this.tok().isOp(",")) {
-                this.next();
-                vals.push(Val.newCommaDelim());
-                continue;
-            }
-            if (this.tok().isOp(";")) {
-                this.next();
-                vals.push(Val.newSemicolonDelim());
-                continue;
-            }
-            break;
+            readyForExpression = false;
         }
         this.ctx.op("PRINT", vals);
     }
 
     locateStmt() {
         this.expectIdent("LOCATE");
-        let x: Val | undefined;
-        let y: Val | undefined;
+        let x: MVal;
+        let y: MVal;
         if (this.tok().isOp(",")) {
             this.next();
             y = this.numericExpr();
@@ -1017,8 +1041,8 @@ class Parser implements ILocator {
     }
     colorStmt() { // COLOR [<fore>][, <back>]
         this.expectIdent("COLOR");
-        let fore: Val | undefined;
-        let back: Val | undefined;
+        let fore: MVal;
+        let back: MVal;
         if (this.tok().isOp(",")) {
             this.next();
             back = this.expr();
@@ -1061,7 +1085,7 @@ class Parser implements ILocator {
         const id = this.expectIdent();
         if (!id) { return; }
         const sig = this.maybeSigil();
-        const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs());
+        const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs(), false);
         this.ctx = subCtx;
         this.openBlocks.push(new Block(begin, "FUNCTION"));
     }
@@ -1086,6 +1110,33 @@ class Parser implements ILocator {
         return;
     }
 
+    defStmt() { // DEF FnFoo [()] = expr
+        // DEF SEG
+        this.expectIdent("DEF");
+        if (this.nextIf("SEG")) { // TODO
+            this.eatUntilNewline();
+            return;
+        }
+        const prefix = this.tok().text.substr(0, 2).toLowerCase();
+        if (prefix !== "fn") {
+            this.error("unknown command");
+            return;
+        }
+        const id = this.nextIdent();
+        if (!id) return;
+        const sig = this.maybeSigil();
+        this.expectModuleLevel();
+        const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs(), true);
+        this.expectOp("=");
+        this.ctx = subCtx;
+        const returnVal = this.ctx.variable(id, sig, undefined);
+        if (!returnVal) return;
+        const rhs = this.expr();
+        if (!rhs) return;
+        this.ctx.op("assign", [returnVal, rhs]);
+        this.ctx.endFunction();
+        this.ctx = this.moduleCtx;
+    }
     callArgsWithTypes(types: Type[], requiredArgsCount: number = -1): Val[] | undefined {
         if (requiredArgsCount === -1) { requiredArgsCount = types.length; }
         const args = this.callArgs(true, requiredArgsCount);
@@ -1461,7 +1512,7 @@ class Parser implements ILocator {
         this.expectIdent("PSET");
         const a = this.coord();
         if (!a) return;
-        let color: Val | undefined;
+        let color: MVal;
         if (this.tok().isOp(",")) {
             this.next();
             if (!this.tok().isOp(",")) {
@@ -1472,13 +1523,19 @@ class Parser implements ILocator {
     }
     lineStmt() {
         this.expectIdent("LINE");
-        const a = this.coord();
-        this.expectOp("-");
+        let a: Coord | undefined;
+        if (!this.nextIf("-")) {
+            a = this.coord();
+            this.expectOp("-");
+            if (!a) return;
+        } else {
+            a = new Coord(true, Val.newNumberLiteral(0, kIntType), Val.newNumberLiteral(0, kIntType));
+        }
         const b = this.coord();
-        if (!a || !b) return;
-        let color: Val | undefined;
+        if (!b) return;
+        let color: MVal;
         let option = "";
-        let style: Val | undefined;
+        let style: MVal;
         if (this.tok().isOp(",")) {
             this.next();
             if (!this.tok().isOp(",")) {
@@ -1503,13 +1560,69 @@ class Parser implements ILocator {
         }
         this.ctx.line(a, b, color, option, style);
     }
+    drawStmt() {
+        this.expectIdent("DRAW");
+        const expr = this.stringExpr();
+        if (!expr) return;
+        this.ctx.draw(expr);
+    }
+    getStmt() {
+        this.expectIdent("GET");
+        const a = this.coord();
+        this.expectOp("-");
+        const b = this.coord();
+        if (!a || !b) return;
+        if (!this.expectOp(",")) return;
+        const id = this.expectIdent();
+        if (!id) return;
+        this.ctx.getGraphics(a, b, id);
+    }
+    putStmt() {
+        this.expectIdent("PUT");
+        const a = this.coord();
+        if (!a) return;
+        if (!this.expectOp(",")) return;
+        const id = this.expectIdent();
+        if (!id) return;
+        this.ctx.putGraphics(a, id);
+    }
     circleStmt() {
         this.expectIdent("CIRCLE"); // TODO
-        this.eatUntilNewline();
+        const a = this.coord();
+        if (!a) return;
+        this.expectOp(",");
+        const r = this.numericExpr();
+        if (!r) return;
+        let color: MVal;
+        if (this.nextIf(",")) {
+            color = this.numericExpr();
+        }
+        this.ctx.circle(a, r, color);
     }
     paintStmt() {
         this.expectIdent("PAINT"); // TODO
-        this.eatUntilNewline();
+        const a = this.coord();
+        if (!a) return;
+        let paintColor: MVal;
+        let borderColor: MVal;
+        let background: MVal;
+        if (this.nextIf(",")) {
+            if (!this.tok().isOp(",")) {
+                paintColor = this.numericExpr(); // TODO: pattern
+                if (!paintColor) return;
+            }
+            if (this.nextIf(",")) {
+                if (!this.tok().isOp(",")) {
+                    borderColor = this.numericExpr();
+                    if (!borderColor) return;
+                }
+                if (this.nextIf(",")) {
+                    background = this.stringExpr();
+                    if (!background) return;
+                }
+            }
+        }
+        this.ctx.paint(a, paintColor, borderColor, background);
     }
     sleepStmt() {
         this.expectIdent("SLEEP");
@@ -1623,11 +1736,14 @@ class Parser implements ILocator {
                 case "COLOR": this.colorStmt(); break;
                 case "PRINT": case "?": this.printStmt(); break;
                 case "LINE": this.lineStmt(); break;
+                case "DRAW": this.drawStmt(); break;
+                case "GET": this.getStmt(); break;
+                case "PUT": this.putStmt(); break;
                 case "GOTO": this.gotoStmt(); break;
                 case "LOCATE": this.locateStmt(); break;
                 case "PALETTE": this.paletteStmt(); break;
                 case "SLEEP": this.sleepStmt(); break;
-                case "DIM": this.dimStmt(); break;
+                case "REDIM": case "DIM": this.dimStmt(); break;
                 case "INPUT": this.inputStmt(); break;
                 case "CLS": this.clsStmt(); break;
                 case "CIRCLE": this.circleStmt(); break;
@@ -1644,8 +1760,9 @@ class Parser implements ILocator {
                 case "DATA": this.dataStmt(); break;
                 case "READ": this.readStmt(); break;
                 case "RESTORE": this.restoreStmt(); break;
+                case "DEF": this.defStmt(); break;
                 // TODO:
-                case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
+                case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
                 case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
                 default: handled = false;
             }
@@ -1686,17 +1803,14 @@ class Parser implements ILocator {
 // Basic language constructs
 // DEF FN Statement
 // DEFtype Statements - Set the default data type for variables, DEF FN functions, and FUNCTION procedures
-// DIM SHARED
 // ERASE Statement
 // ERROR Statement - raise errors
 // EXIT Statement
 // FUNCTION Statement
-// GOSUB...RETURN Statements
 // HEX$ Function
 // INSTR Function - Returns the character position of the first occurrence of a string in another string
 //      INSTR([[start,]]stringexpression1,stringexpression2)
 // SPC Function
-// SPACE$ Function
 // SQR Function
 // LBOUND Function
 // LCASE$ Function
@@ -1706,8 +1820,6 @@ class Parser implements ILocator {
 // INPUT$ Function
 // LOCATE Statement
 // LOG Function
-// LTRIM$ Function
-// MID$ Function
 // MID$ Statement
 // MKSMBF$, MKDMBF$ Functions
 // OCT$ Function
@@ -1729,12 +1841,8 @@ class Parser implements ILocator {
 // PRINT USING Statement
 // RANDOMIZE Statement
 // READ Statement
-// REDIM Statement
 // RESTORE Statement
 // RESUME Statement
-// RETURN Statement
-// RIGHT$ Function
-// RTRIM$ Function
 // RUN Statement
 // SCREEN Function
 // SCREEN Statement
