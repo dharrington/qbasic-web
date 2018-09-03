@@ -179,6 +179,7 @@ export interface ICtx {
     label(tok: Token);
     lineNumber(num: number, tok: Token);
     newline(lineNumber: number);
+    newStmt();
     data(dataArray: Val[]);
     read(args: Val[]);
     restore(label: number | string);
@@ -221,6 +222,7 @@ export interface ICtx {
     whileBegin();
     whileCond(cond: Val);
     wend();
+    onErrorGoto(target: number | string);
     gotoLine(no: number, numberToken: Token);
     gotoLabel(lbl: Token);
     goReturn(token: Token | undefined, lbl: number | string | undefined);
@@ -267,7 +269,16 @@ class Parser implements ILocator {
     // DEFINT etc... map from first letter to base type.
     private defaultVarTypes = new Map<string, Type>();
     private moduleCtx: ICtx = this.ctx;
+    private dynamicFlag = false;
     constructor(private ctx: ICtx, private tokens: Token[]) {
+        for (const tok of this.tokens) {
+            if (tok.id === TokenType.kComment) {
+                if (/(REM|')\s*[$]DYNAMIC\s*/.test(tok.text)) {
+                    this.dynamicFlag = true;
+                }
+            }
+        }
+        this.tokens = this.tokens.filter((x) => x.id !== TokenType.kComment);
         ctx.setLocator(this);
     }
     currentLocation(): Location | undefined {
@@ -669,7 +680,7 @@ class Parser implements ILocator {
                 if (!result) return;
                 ty = result;
             }
-            this.ctx.dim(id, size, ty, shared !== undefined, redim !== undefined);
+            this.ctx.dim(id, size, ty, shared !== undefined, redim !== undefined || this.dynamicFlag);
             if (!this.nextIf(",")) break;
         }
     }
@@ -1624,6 +1635,17 @@ class Parser implements ILocator {
         }
         this.ctx.paint(a, paintColor, borderColor, background);
     }
+    onStmt() {
+        this.expectIdent("ON");
+        if (this.nextIf("ERROR")) {
+            this.expectIdent("GOTO");
+            const target = this.labelOrLineNumber();
+            if (!target) {
+                return;
+            }
+            this.ctx.onErrorGoto(target);
+        }
+    }
     sleepStmt() {
         this.expectIdent("SLEEP");
         if (!this.isEol()) {
@@ -1716,6 +1738,7 @@ class Parser implements ILocator {
                 }
             }
             let handled = true;
+            this.ctx.newStmt();
             switch (this.tok().text) {
                 case "DECLARE": this.declareStmt(); break;
                 case "SUB": this.subStmt(); break;
@@ -1761,6 +1784,7 @@ class Parser implements ILocator {
                 case "READ": this.readStmt(); break;
                 case "RESTORE": this.restoreStmt(); break;
                 case "DEF": this.defStmt(); break;
+                case "ON": this.onStmt(); break;
                 // TODO:
                 case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
                 case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
@@ -1777,6 +1801,7 @@ class Parser implements ILocator {
         this.ctx.endStmt();
         return true;
     }
+
     statementAndNewline() {
         if (!this.statement()) {
             this.eatUntilNewline();
@@ -1823,7 +1848,6 @@ class Parser implements ILocator {
 // MID$ Statement
 // MKSMBF$, MKDMBF$ Functions
 // OCT$ Function
-// ON ERROR Statement
 // ON event Statements
 // ON UEVENT GOSUB Statement
 // ON...GOSUB, ON...GOTO Statements

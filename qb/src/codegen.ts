@@ -35,19 +35,20 @@ enum CtrlFlowType {
 class CtrlFlow {
     public branchInst?: vm.Instruction;
     public endInstructions: vm.Instruction[] = [];
-    public loopStart: number;
+    public loopStart: BranchTarget;
     selectValue: Val;
     // SELECT CASE is implemented as a chain of conditionals.
     // For each case, stores two instruction offsets. First is the place to jump to to start the case.
     // Second is the branch instruction that skips over the case when the test fails.
-    caseInstOffset: number[][] = [];
+    caseInstOffset: (BranchTarget | undefined)[][] = [];
     endCaseInstructions: vm.Instruction[] = [];
 
     constructor(public type: CtrlFlowType) { }
 }
 class GotoInfo {
-    public lineNumber: number;
-    public label: string;
+    public lineNumber: number | undefined;
+    public label: string | undefined;
+    public target: BranchTarget | undefined;
     public token: Token;
     constructor(public inst: vm.Instruction) { }
 }
@@ -61,10 +62,60 @@ class SubroutineInfo {
 
 class BlockInfo {
     public startPc: number = -1;
-    public endPC: number = -1;
     public argCount: number = 0;
-    public skipBranch: vm.Instruction | undefined;
     public declareInstructions: vm.Instruction[] = [];
+    public inst: vm.Instruction[] = [];
+    public instToLine = new Map<number, number>();
+    public startShift = 0;
+
+    setStartPC(pc: number) {
+        for (const i of this.inst) {
+            if (vm.BranchInstructions.has(i.id) && i.args.length > 0) {
+                i.args[0] += pc - this.startPc;
+            }
+        }
+        this.startPc = pc;
+    }
+
+    insertInstructions(pos: number, count: number) {
+        if (count <= 0) return;
+        for (const inst of this.inst) {
+            if (!vm.BranchInstructions.has(inst.id)) continue;
+            const n = inst.args[0] as number;
+            if (n > pos) {
+                inst.args[0] = n + count;
+            }
+        }
+        for (let i = 0; i < count; i++) {
+            this.inst.push(undefined as any);
+        }
+        for (let i = this.inst.length - 1; i >= pos + count; i--) {
+            this.inst[i] = this.inst[i - count];
+            this.inst[i - count] = undefined as any;
+            const line = this.instToLine.get(i - count);
+            if (line !== undefined) {
+                this.instToLine.delete(i - count);
+                this.instToLine.set(i, line);
+            }
+        }
+    }
+
+    insertDeclareInstructions() {
+        if (!this.declareInstructions.length) return;
+        this.insertInstructions(0, this.declareInstructions.length);
+        for (let i = 0; i < this.declareInstructions.length; i++) {
+            this.inst[i] = this.declareInstructions[i];
+        }
+        this.startShift = this.declareInstructions.length;
+        this.declareInstructions = [];
+    }
+}
+
+class BranchTarget {
+    constructor(public block: BlockInfo, public instOffset: number) { }
+    getPC(): number {
+        return this.block.startPc + this.instOffset + this.block.startShift;
+    }
 }
 class FunctionInfo {
     // Many built-in functions are simply passing stack indexes to op-codes.
@@ -81,7 +132,7 @@ class FunctionInfo {
     constructor(public type: FunctionType, public builtin: boolean) { }
 }
 class DataStmtOffset {
-    constructor(public instructionIndex: number, public dataOffset: number) { }
+    constructor(public instructionIndex: BranchTarget, public dataOffset: number) { }
 }
 class RestoreInfo {
     constructor(public restoreInst: vm.Instruction, public lbl: number | string) { }
@@ -94,8 +145,8 @@ class GlobalCtx {
     public subs: Map<string, SubroutineInfo> = new Map<string, SubroutineInfo>();
     public constantVals = new Map<string, Val>();
     // Line number label -> instruction offset.
-    public lineNumbers: Map<number, number> = new Map<number, number>();
-    public labels: Map<string, number> = new Map<string, number>();
+    public lineNumbers: Map<number, BranchTarget> = new Map<number, BranchTarget>();
+    public labels: Map<string, BranchTarget> = new Map<string, BranchTarget>();
     public program: vm.Program = new vm.Program();
     public errors: string[] = [];
     public errorLocations: Location[] = [];
@@ -233,7 +284,10 @@ export class CodegenCtx implements ICtx {
     program(): vm.Program { return this.g.program; }
     errors(): string[] { return this.g.errors; }
     errorLocations(): Location[] { return this.g.errorLocations; }
-    error(message: string, loc?: Location) {
+    error(message: string, loc?: Location | Token) {
+        if (loc instanceof Token) {
+            loc = loc.loc;
+        }
         if (loc) {
             this.g.errors.push(message + " at " + loc.toString());
             this.g.errorLocations.push(loc);
@@ -259,20 +313,26 @@ export class CodegenCtx implements ICtx {
         return this.g.types.get(tok.text);
     }
     label(tok: Token) {
-        this.g.labels.set(tok.text, this.instructionCount());
+        this.g.labels.set(tok.text, this.branchTargetHere());
     }
     lineNumber(num: number, tok: Token) {
         if (this.g.lineNumbers.has(num)) {
             this.error("duplicate label", tok.loc);
             return;
         }
-        this.g.lineNumbers.set(num, this.instructionCount());
+        this.g.lineNumbers.set(num, this.branchTargetHere());
     }
     newline(lineNumber: number) {
         this.g.currentLine = lineNumber;
     }
+    newStmt() {
+        const offset = this.blockInfo.inst.length;
+        if (this.g.program.statementOffsets.length === 0 || this.g.program.statementOffsets[this.g.program.statementOffsets.length - 1] !== offset) {
+            this.g.program.statementOffsets.push(offset);
+        }
+    }
     data(dataArray: Val[]) {
-        this.g.dataOffsets.push(new DataStmtOffset(this.program().inst.length, this.program().dataList.length));
+        this.g.dataOffsets.push(new DataStmtOffset(this.branchTargetHere(), this.program().dataList.length));
         // I've got line numbers and labels mapping to instruction offsets. Since DATA doesn't really need an
         // instruction I instead write a NOP.
         this.emit(vm.InstructionID.NOP);
@@ -371,7 +431,6 @@ export class CodegenCtx implements ICtx {
 
         // Write declaration instruction.
         const varVal = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
-        // this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE_VAR, [key, varVal]));
         this.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE, [v.stackOffset, varVal]));
         return v;
     }
@@ -467,26 +526,36 @@ export class CodegenCtx implements ICtx {
         let dynamicDims: Val[] = [];
         let dynamicSize = false;
         if (size) {
-            if (!dynamic) {
-                numericSize = [];
-                for (const s of size) {
-                    const sAsNumeric: number[] = [];
-                    for (const sv of s) {
-                        if ((sv.isLiteral() || sv.isConst()) && sv.type.isNumeric()) {
-                            sAsNumeric.push(sv.numberValue);
-                        } else if (sv.kind === ValKind.kUnspecifiedDimSize) {
-                            dynamicSize = true;
-                            sAsNumeric.push(0);
-                        } else {
+            numericSize = [];
+            for (const s of size) {
+                const sAsNumeric: number[] = [];
+                for (const sv of s) {
+                    if ((sv.isLiteral() || sv.isConst()) && sv.type.isNumeric()) {
+                        sAsNumeric.push(sv.numberValue);
+                    } else if (sv.kind === ValKind.kUnspecifiedDimSize) {
+                        dynamicSize = true;
+                        sAsNumeric.push(0);
+                    } else {
+                        if (!dynamic) {
                             this.error("expected constant numeric value", sv.loc());
+                            return;
+                        } else {
+                            dynamicSize = true;
                         }
                     }
-                    numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
                 }
-            } else {
+                numericSize.push(sAsNumeric[sAsNumeric.length - 1]);
+            }
+            if (dynamicSize) {
                 for (const s of size) {
-                    dynamicDims.push(s[s.length - 1]);
+                    const val = s[s.length - 1];
+                    if (val.kind == ValKind.kUnspecifiedDimSize) {
+                        dynamicDims.push(this.constNumber(0, kIntType));
+                    } else {
+                        dynamicDims.push(val);
+                    }
                 }
+                numericSize = dynamicDims.map(() => 0);
             }
         }
         let v = existingDefinition;
@@ -498,7 +567,7 @@ export class CodegenCtx implements ICtx {
                 v.stackOffset = kLocalBit | this.localVarCount++;
             }
             v.dimmed = true;
-            if (dynamicSize) v.dynamic = true;
+            if (dynamicSize || dynamic) v.dynamic = true;
             if (shared) v.shared = true;
             this.dimVars.set(nameText, v);
         }
@@ -658,22 +727,20 @@ export class CodegenCtx implements ICtx {
             }
             case "PRINT": {
                 let endsWithSeparator = false;
-                const printArgs: any[] = [];
                 for (const arg of O) {
                     endsWithSeparator = false;
                     if (arg.isCommaDelim()) {
                         endsWithSeparator = true;
-                        printArgs.push(Val.newStringLiteral("\t"));
+                        this.write(vm.InstructionID.PRINT, Val.newStringLiteral("\t"));
                     } else if (arg.isSemicolonDelim()) {
                         endsWithSeparator = true;
                     } else {
-                        printArgs.push(arg);
+                        this.write(vm.InstructionID.PRINT, arg);
                     }
                 }
                 if (!endsWithSeparator) {
-                    printArgs.push(Val.newStringLiteral("\n"));
+                    this.write(vm.InstructionID.PRINT, Val.newStringLiteral("\n"));
                 }
-                this.write(vm.InstructionID.PRINT, ...printArgs);
                 return undefined;
             }
             case "SWAP": {
@@ -770,7 +837,6 @@ export class CodegenCtx implements ICtx {
         if (!this.g.isEnd) {
             this.g.isEnd = true;
             this.write(vm.InstructionID.END);
-            this.blockInfo.endPC = this.program().inst.length - 1;
         }
     }
     sub(id: Token, args: Val[]): ICtx {
@@ -808,7 +874,7 @@ export class CodegenCtx implements ICtx {
         subCtx.reservedStackSlots = args.length;
         subCtx.stackOffset = args.length;
         sub.blockInfo.argCount = args.length;
-        sub.blockInfo.startPc = this.instructionCount();
+        sub.blockInfo.startPc = 0;
         subCtx.g = this.g;
         subCtx.parent = this;
         subCtx.subInfo = sub;
@@ -825,11 +891,8 @@ export class CodegenCtx implements ICtx {
     }
 
     functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[], singleLine: boolean): ICtx {
-        let skipBranch: vm.Instruction | undefined;
         if (!singleLine) {
             this.setEnd();
-        } else {
-            // skipBranch = this.emit(vm.InstructionID.BRANCH, 0/*filled in later*/);
         }
         let fn = this.g.functions.get(id.text);
         if (!fn) {
@@ -848,8 +911,7 @@ export class CodegenCtx implements ICtx {
         fnCtx.parent = this;
         fnCtx.blockInfo = fn.blockInfo;
         fn.blockInfo.argCount = args.length + 1;
-        fn.blockInfo.startPc = this.instructionCount();
-        if (skipBranch) fn.blockInfo.skipBranch = skipBranch;
+        fn.blockInfo.startPc = 0;
 
         const retVal = Val.newVar(id.text, returnType);
         retVal.dimmed = true;
@@ -909,7 +971,6 @@ export class CodegenCtx implements ICtx {
             return;
         }
         this.write(vm.InstructionID.EXIT_SUB);
-        this.subInfo.blockInfo.endPC = this.instructionCount() - 1;
     }
     endFunction() {
         if (!this.fnInfo) {
@@ -917,7 +978,6 @@ export class CodegenCtx implements ICtx {
             return;
         }
         this.write(vm.InstructionID.EXIT_SUB);
-        this.fnInfo.blockInfo.endPC = this.instructionCount() - 1;
     }
     isSub(id: string): boolean {
         if (this.g.builtinSubs.has(id)) return true;
@@ -1035,7 +1095,9 @@ export class CodegenCtx implements ICtx {
         const flow = this.ctrlFlow(CtrlFlowType.kIF);
         if (!flow) return; // should be caught by parser.
         flow.endInstructions.push(this.emit(vm.InstructionID.BRANCH, 0/*filled in later*/));
-        if (flow.branchInst) flow.branchInst.args[0] = this.instructionCount();
+        if (flow.branchInst) {
+            this.recordBranchTarget(this.branchTargetHere(), flow.branchInst);
+        }
         if (cond) {
             flow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0/*filled in later*/, cond);
         } else {
@@ -1046,10 +1108,10 @@ export class CodegenCtx implements ICtx {
         const flow = this.ctrlFlow(CtrlFlowType.kIF);
         if (!flow) return;
         if (flow.branchInst) {
-            flow.branchInst.args[0] = this.instructionCount();
+            this.recordBranchTarget(this.branchTargetHere(), flow.branchInst);
         }
         for (const ei of flow.endInstructions) {
-            ei.args[0] = this.instructionCount();
+            this.recordBranchTarget(this.branchTargetHere(), ei);
         }
         this.ctrlFlowStack.pop();
     }
@@ -1064,7 +1126,7 @@ export class CodegenCtx implements ICtx {
         if (flow.caseInstOffset.length > 0) {
             flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
         }
-        const testpc = this.program().inst.length;
+        const testpc = this.branchTargetHere();
         let testResult = this.op("=", [flow.selectValue, vs[0]]);
         if (!testResult) return;
         for (let i = 1; i < vs.length; ++i) {
@@ -1073,7 +1135,7 @@ export class CodegenCtx implements ICtx {
             testResult = this.op("OR", [testResult, next]);
         }
 
-        const branchpc = this.program().inst.length;
+        const branchpc = this.branchTargetHere();
         this.write(vm.InstructionID.BRANCH_IFNOT, 0, testResult);
         flow.caseInstOffset.push([testpc, branchpc]);
     }
@@ -1081,25 +1143,25 @@ export class CodegenCtx implements ICtx {
         const flow = this.ctrlFlow();
         if (!flow) return;
         flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
-        const offset = this.program().inst.length;
+        const offset = this.branchTargetHere();
         this.emit(vm.InstructionID.NOP);
-        flow.caseInstOffset.push([offset, -1]);
+        flow.caseInstOffset.push([offset, undefined]);
     }
     selectEnd() {
         const flow = this.ctrlFlow();
         if (!flow) return;
-        const endPos = this.program().inst.length;
+        const endPos = this.branchTargetHere();
         for (const inst of flow.endCaseInstructions) {
-            inst.args[0] = endPos;
+            this.recordBranchTarget(endPos, inst);
         }
         for (let i = 0; i < flow.caseInstOffset.length; ++i) {
             const [testOffset, branchOffset] = flow.caseInstOffset[i];
-            if (branchOffset >= 0) {
-                const branch = this.program().inst[branchOffset];
+            if (branchOffset !== undefined) {
+                const branch = this.blockInfo.inst[branchOffset.instOffset];
                 if (i + 1 < flow.caseInstOffset.length) {
-                    branch.args[0] = flow.caseInstOffset[i + 1][0];
+                    this.recordBranchTarget(flow.caseInstOffset[i + 1][0] as BranchTarget, branch);
                 } else {
-                    branch.args[0] = endPos;
+                    this.recordBranchTarget(endPos, branch);
                 }
             }
         }
@@ -1119,11 +1181,11 @@ export class CodegenCtx implements ICtx {
         step = step ? this.stackify(step) : this.constNumber(1, idx.type);
         const condVal = this.newStackValue(kIntType);
         const branch0 = this.emit(vm.InstructionID.BRANCH, 0);
-        ctrlFlow.loopStart = this.instructionCount();
+        ctrlFlow.loopStart = this.branchTargetHere();
         const idxOnStack = this.stackify(idx);
         this.write(vm.InstructionID.ADD, idxOnStack, idxOnStack, step);
         this.assign(idx, idxOnStack.stackOffset);
-        branch0.args[0] = this.instructionCount();
+        this.recordBranchTarget(this.branchTargetHere(), branch0);
         this.loadVar(idxOnStack.stackOffset, idx); // This has no effect except for first pass where STEP isn't applied.
         this.write(vm.InstructionID.LTE, condVal, idxOnStack, to);
         ctrlFlow.branchInst = this.write(vm.InstructionID.BRANCH_IFNOT, 0, condVal);
@@ -1140,14 +1202,16 @@ export class CodegenCtx implements ICtx {
         if (!flow) return;
         this.ctrlFlowStack.pop();
         this.write(vm.InstructionID.BRANCH, flow.loopStart);
-        if (flow.branchInst) flow.branchInst.args[0] = this.instructionCount();
+        if (flow.branchInst) {
+            this.recordBranchTarget(this.branchTargetHere(), flow.branchInst);
+        }
         for (const ei of flow.endInstructions) {
-            ei.args[0] = this.instructionCount();
+            this.recordBranchTarget(this.branchTargetHere(), ei);
         }
     }
     doBegin() {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kDO);
-        ctrlFlow.loopStart = this.program().inst.length;
+        ctrlFlow.loopStart = this.branchTargetHere();
         this.ctrlFlowStack.push(ctrlFlow);
     }
     doWhileCond(cond: Val) {
@@ -1169,18 +1233,18 @@ export class CodegenCtx implements ICtx {
         } else {
             this.write(vm.InstructionID.BRANCH, flow.loopStart);
         }
-        const endPC = this.program().inst.length;
+        const endPos = this.branchTargetHere();
         if (flow.branchInst) {
-            flow.branchInst.args[0] = endPC;
+            this.recordBranchTarget(endPos, flow.branchInst);
         }
         for (const ei of flow.endInstructions) {
-            ei.args[0] = endPC;
+            this.recordBranchTarget(endPos, ei);
         }
         this.ctrlFlowStack.pop();
     }
     whileBegin() {
         const ctrlFlow = new CtrlFlow(CtrlFlowType.kWHILE);
-        ctrlFlow.loopStart = this.program().inst.length;
+        ctrlFlow.loopStart = this.branchTargetHere();
         this.ctrlFlowStack.push(ctrlFlow);
     }
     whileCond(cond: Val) {
@@ -1194,11 +1258,20 @@ export class CodegenCtx implements ICtx {
             return; // should be caught by parser.
         }
         this.write(vm.InstructionID.BRANCH, flow.loopStart);
-        const endPC = this.program().inst.length;
+        const endPos = this.branchTargetHere();
         if (flow.branchInst) {
-            flow.branchInst.args[0] = endPC;
+            this.recordBranchTarget(endPos, flow.branchInst);
         }
         this.ctrlFlowStack.pop();
+    }
+    onErrorGoto(target: number | string) {
+        const g = new GotoInfo(this.emit(vm.InstructionID.ON_ERROR_GOTO, 0));
+        if (typeof target === 'string') {
+            g.label = target;
+        } else {
+            g.lineNumber = target;
+        }
+        this.g.gotos.push(g);
     }
     gotoLine(no: number, tok: Token) {
         const g = new GotoInfo(this.emit(vm.InstructionID.BRANCH, 0));
@@ -1434,97 +1507,76 @@ export class CodegenCtx implements ICtx {
     randomize(seed: Val) {
         this.write(vm.InstructionID.RANDOMIZE, seed);
     }
-    insertInstructions(pos: number, count: number) {
-        if (count <= 0) return;
-        const prog = this.program();
-        for (const inst of prog.inst) {
-            if (!vm.BranchInstructions.has(inst.id)) continue;
-            const n = inst.args[0] as number;
-            if (n > pos) {
-                inst.args[0] = n + count;
-            }
-        }
-        for (let i = 0; i < count; i++) {
-            prog.inst.push(undefined as any);
-        }
-        for (let i = prog.inst.length - 1; i >= pos + count; i--) {
-            prog.inst[i] = prog.inst[i - count];
-            prog.inst[i - count] = undefined as any;
-            const line = this.g.program.instToLine.get(i - count);
-            if (line !== undefined) {
-                this.g.program.instToLine.delete(i - count);
-                this.g.program.instToLine.set(i, line);
-            }
-        }
-        for (const b of this.allBlocks()) {
-            if (b.startPc > pos) {
-                b.startPc += count;
-            }
-            if (b.endPC >= pos) {
-                b.endPC += count;
-            }
-        }
-    }
-    moveBlockToEnd(block: BlockInfo) {
-        const prog = this.program();
-        const newStart = this.g.program.inst.length;
-        const newEnd = newStart + (block.endPC - block.startPc);
-        const deltaPC = newStart - block.startPc;
-        for (let i = block.startPc; i <= block.endPC; i++) {
-            prog.inst.push(prog.inst[i]);
-            prog.inst[i] = new vm.Instruction(vm.InstructionID.NOP, []);
-        }
-
-        for (let i = 0; i < prog.inst.length; i++) {
-            const inst = prog.inst[i];
-            if (!vm.BranchInstructions.has(inst.id)) continue;
-            const n = inst.args[0] as number;
-            if (n >= block.startPc && n <= block.endPC) {
-                inst.args[0] += deltaPC;
-            }
-        }
-
-        for (let i = block.startPc; i <= block.endPC; i++) {
-            const line = this.g.program.instToLine.get(i);
-            if (line !== undefined) {
-                this.g.program.instToLine.delete(i);
-                this.g.program.instToLine.set(i + deltaPC, line);
-            }
-        }
-        block.startPc = newStart;
-        block.endPC = newEnd;
-    }
-    insertDeclareInstructions(pos: number, declares: vm.Instruction[]) {
-        this.insertInstructions(pos, declares.length);
-        const prog = this.program();
-        for (let i = 0; i < declares.length; i++) {
-            prog.inst[i + pos] = declares[i];
-        }
-    }
 
     finalize() {
         if (!this.g.isEnd) this.setEnd();
         if (this.finalized) {
             throw new Error("already finalized");
         }
+        const allBlocks = this.allBlocks();
+
+        // DECLARE_VAR instructions need to be first in the main module, and in each sub/function.
+        // Insert these instructions now, starting with the last block.
+        // This is only safe at the end of finalize, since some instruction indices are not updated.
+        for (let i = allBlocks.length - 1; i >= 0; i--) {
+            const b = allBlocks[i];
+            b.insertDeclareInstructions();
+        }
+
+
+        // Shift stack offsets to make room for constant, global, and local variables.
+        const constCount = this.g.program.data.length;
+        const globalCount = this.g.globalVarCount;
+        for (const b of allBlocks) {
+            let shiftCount = b.startShift;
+            if (b === this.blockInfo) {
+                shiftCount += constCount + globalCount;
+            }
+            for (const inst of b.inst) {
+                inst.mapStackOffset((s) => {
+                    switch ((s & kSpecialBits)) {
+                        case 0: return s < b.argCount ? s : s + shiftCount;
+                        case kGlobalBit: return (s ^ kGlobalBit) + constCount | vm.kGlobalBit;
+                        case kConstBit: return s ^ (kConstBit | vm.kGlobalBit);
+                        case kLocalBit: return (s ^ kLocalBit) + b.argCount;
+                    }
+                    return s;
+                });
+            }
+            for (const inst of b.inst) {
+                if (inst.id === vm.InstructionID.CALL_SUB || inst.id === vm.InstructionID.CALL_FUNCTION) {
+                    inst.args[1] += shiftCount;
+                }
+            }
+        }
+
+        // Linearize the blocks.
+        let finalPC = 0;
+        for (const b of allBlocks) {
+            b.setStartPC(finalPC);
+            finalPC += b.inst.length;
+        }
+
+        // Finalize PCs referenced in instructions.
         for (const r of this.g.restores) {
-            let pc;
+            let target: BranchTarget | undefined;
             if (typeof (r.lbl) === "string") {
-                pc = this.g.labels.get(r.lbl);
-                if (pc === undefined) {
+                target = this.g.labels.get(r.lbl);
+                if (target === undefined) {
                     this.error("label not found");
                     continue;
                 }
             } else {
-                pc = this.g.lineNumbers.get(r.lbl);
-                if (pc === undefined) {
+                target = this.g.lineNumbers.get(r.lbl);
+                if (target === undefined) {
                     this.error("line number not found");
                     continue;
                 }
             }
             r.restoreInst.args[0] = 1 << 32;
             for (const d of this.g.dataOffsets) {
-                if (pc <= d.instructionIndex) {
+                if (target.block === d.instructionIndex.block &&
+                    target.instOffset <= d.instructionIndex.instOffset) {
                     r.restoreInst.args[0] = d.dataOffset;
                     break;
                 }
@@ -1540,78 +1592,36 @@ export class CodegenCtx implements ICtx {
                 call.args[0] = fn.blockInfo.startPc;
             }
         }
+
         for (const g of this.g.gotos) {
-            let pc: number | undefined;
+            let target: BranchTarget | undefined;
             if (g.label) {
-                pc = this.g.labels.get(g.label);
-                if (pc === undefined) {
-                    this.error("label not found", g.token.loc);
+                target = this.g.labels.get(g.label);
+                if (target === undefined) {
+                    this.error("label not found", g.token);
                     continue;
                 }
+            } else if (g.lineNumber !== undefined) {
+                target = this.g.lineNumbers.get(g.lineNumber);
+                if (target === undefined) {
+                    this.error("line number not found", g.token);
+                    continue;
+                }
+            } else if (g.target !== undefined) {
+                target = g.target;
+            }
+            if (target) {
+                g.inst.args[0] = target.getPC();
             } else {
-                pc = this.g.lineNumbers.get(g.lineNumber);
-                if (pc === undefined) {
-                    this.error("line number not found", g.token.loc);
-                    continue;
-                }
-            }
-            g.inst.args[0] = pc;
-        }
-
-        let allBlocks = this.allBlocks();
-
-        // Some blocks intersect with the main block. Move them to the end and re-sort blocks.
-        for (const b of allBlocks.slice(1)) {
-            if (b.startPc <= this.blockInfo.endPC) {
-                this.moveBlockToEnd(b);
+                this.error("internal error");
             }
         }
-        allBlocks = this.allBlocks();
-
+        const prog = this.program();
         for (const b of allBlocks) {
-            if (b.skipBranch) {
-                b.skipBranch.args[0] = b.endPC + 1;
+            for (const inst of b.inst) {
+                prog.inst.push(inst);
             }
         }
-
-        // DECLARE_VAR instructions need to be first in the main module, and in each sub/function.
-        // Insert these instructions now, starting with the last block.
-        // This is only safe at the end of finalize, since some instruction indices are not updated.
-        for (let i = allBlocks.length - 1; i >= 0; i--) {
-            const b = allBlocks[i];
-            if (b.declareInstructions.length) {
-                this.insertDeclareInstructions(b.startPc, b.declareInstructions);
-            }
-        }
-
-        // Shift stack offsets to make room for constant, global, and local variables.
-        const constCount = this.g.program.data.length;
-        const globalCount = this.g.globalVarCount;
-        for (const b of allBlocks) {
-            let shiftCount = b.declareInstructions.length;
-            if (b === this.blockInfo) {
-                shiftCount += constCount + globalCount;
-            }
-            for (let i = b.startPc; i <= b.endPC; i++) {
-                const inst = this.program().inst[i];
-                inst.mapStackOffset((s) => {
-                    switch ((s & kSpecialBits)) {
-                        case 0: return s < b.argCount ? s : s + shiftCount;
-                        case kGlobalBit: return (s ^ kGlobalBit) + constCount | vm.kGlobalBit;
-                        case kConstBit: return s ^ (kConstBit | vm.kGlobalBit);
-                        case kLocalBit: return (s ^ kLocalBit) + b.argCount;
-                    }
-                    return s;
-                });
-            }
-            for (let i = b.startPc; i <= b.endPC; i++) {
-                const inst = this.program().inst[i];
-                if (inst.id === vm.InstructionID.CALL_SUB || inst.id === vm.InstructionID.CALL_FUNCTION) {
-                    inst.args[1] += shiftCount;
-                }
-            }
-        }
-
         this.finalized = true;
     }
 
@@ -1626,7 +1636,7 @@ export class CodegenCtx implements ICtx {
         for (const [name, s] of this.g.subs) {
             if (s.blockInfo.startPc >= 0) allBlocks.push(s.blockInfo);
         }
-        allBlocks.sort((a, b) => a.startPc - b.startPc);
+        //allBlocks.sort((a, b) => a.startPc - b.startPc);
         return allBlocks;
     }
     private assignVal(variable: Val, value: Val) {
@@ -1836,19 +1846,27 @@ export class CodegenCtx implements ICtx {
     }
     // Like write, but ensures the instruction is not optimized away.
     private emit(id: vm.InstructionID, ...args: any[]): vm.Instruction {
+        let bt: BranchTarget | undefined;
         for (let i = 0; i < args.length; i++) {
             // convenience conversion
             if (args[i] instanceof Val) {
                 args[i] = this.stackify(args[i]).stackOffset;
             }
         }
+        if (args.length >= 0 && args[0] instanceof BranchTarget) {
+            bt = args[0];
+            args[0] = 0;
+        }
         const inst = new vm.Instruction(id, args);
-        this.g.program.inst.push(inst);
+        if (bt) {
+            this.recordBranchTarget(bt, inst);
+        }
+        this.blockInfo.inst.push(inst);
         // Map instruction offset to source line number.
         if (this.g.locator) {
             const loc = this.g.locator.currentLocation();
             if (loc) {
-                this.g.program.instToLine.set(this.instructionCount() - 1, loc.line);
+                this.blockInfo.instToLine.set(this.blockInfo.inst.length - 1, loc.line);
             }
         }
         return inst;
@@ -1860,7 +1878,12 @@ export class CodegenCtx implements ICtx {
         }
         return true;
     }
-    private instructionCount(): number {
-        return this.program().inst.length;
+    private branchTargetHere(): BranchTarget {
+        return new BranchTarget(this.blockInfo, this.blockInfo.inst.length);
+    }
+    private recordBranchTarget(target: BranchTarget, inst: vm.Instruction): void {
+        const info = new GotoInfo(inst);
+        info.target = target;
+        this.g.gotos.push(info);
     }
 }

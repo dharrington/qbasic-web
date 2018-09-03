@@ -328,7 +328,7 @@ export enum InstructionID {
     XOR, // S S S
     NOT, // S S
     LOGICNOT, // S S
-    PRINT, // S ...
+    PRINT, // S
     LOCATE, // S|undefined [ S|undefined ]
     ABS, // S S
     MID, // S S S [ S ]
@@ -376,6 +376,7 @@ export enum InstructionID {
     UCASE, // S S
     SPACE, // S S
     LOG, // S
+    ON_ERROR_GOTO, // PC
     NOP,
 }
 
@@ -395,7 +396,7 @@ export const ConstExprInstructions = new Set([
 ]);
 
 export const BranchInstructions = new Set([InstructionID.BRANCH_IFNOT, InstructionID.BRANCH, InstructionID.CALL_SUB,
-InstructionID.GOSUB, InstructionID.CALL_FUNCTION, InstructionID.RETURN]);
+InstructionID.GOSUB, InstructionID.CALL_FUNCTION, InstructionID.RETURN, InstructionID.ON_ERROR_GOTO]);
 
 const kIntMax = 32767;
 const kIntMin = -32768;
@@ -687,8 +688,6 @@ export class Instruction {
             case InstructionID.BRANCH_IFNOT:  // PC S
                 if (offset === 0) return "PC";
                 return "S";
-            case InstructionID.BRANCH:  // PC
-                return "PC";
             case InstructionID.CALL_SUB:  // PC stack-size
                 if (offset === 0) return "PC";
                 if (offset === 1) return "stacksize";
@@ -704,6 +703,8 @@ export class Instruction {
             case InstructionID.EXIT_SUB:  // <no parameters>
                 return "";
             case InstructionID.RETURN:  // PC
+            case InstructionID.ON_ERROR_GOTO: // PC
+            case InstructionID.BRANCH:  // PC
                 return "PC";
             case InstructionID.READ:  // S BaseType
                 if (offset === 0) return "S";
@@ -751,7 +752,7 @@ export class Instruction {
             case InstructionID.XOR:  // S S S
             case InstructionID.NOT:  // S S
             case InstructionID.LOGICNOT:  // S S
-            case InstructionID.PRINT:  // S ...
+            case InstructionID.PRINT:  // S
             case InstructionID.LOCATE:  // S|undefined [ S|undefined ]
             case InstructionID.ABS:  // S S
             case InstructionID.MID:  // S S S [ S ]
@@ -840,7 +841,7 @@ export class Program {
     public data: VariableValue[] = [];
     // Contains an entry for each DATA statement value. Each is an offset into data.
     public dataList: number[] = [];
-
+    public statementOffsets: number[] = [];
     public instToLine = new Map<number, number>();
 
     public source?: string;
@@ -960,6 +961,7 @@ export class Execution {
 
     private frame: Frame = new Frame();
     private moduleFrame: Frame = this.frame;
+    private onErrorLine: number | undefined;
     private inRun: boolean;
     private lastPointX: number = 0;
     private lastPointY: number = 0;
@@ -1052,6 +1054,13 @@ ${listing}
         return this.prog.instructionLineNumber(this.frame.pc);
     }
     raise(err) {
+        if (this.onErrorLine !== undefined) {
+            while (this.frame.parent) {
+                this.frame = this.frame.parent;
+            }
+            this.frame.pc = this.onErrorLine;
+            return;
+        }
         this.exception = err;
         if (this.onException) { this.onException(err, this.currentLine()); }
     }
@@ -1251,21 +1260,19 @@ ${listing}
                 this.save(args[0], VariableValue.single(kDoubleType, toInt(this.read(args[1]).val as number)));
                 break;
             case InstructionID.PRINT: {
-                for (const arg of args) {
-                    const argVal = this.read(arg);
-                    switch (argVal.type.type) {
-                        case BaseType.kSingle: {
-                            this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val as number)));
-                            break;
-                        }
-                        case BaseType.kString: {
-                            this.vpc.print("" + argVal.val);
-                            break;
-                        }
-                        default: {
-                            this.vpc.print(fixupNumberForPrinting("" + argVal.val));
-                            break;
-                        }
+                const argVal = this.read(args[0]);
+                switch (argVal.type.type) {
+                    case BaseType.kSingle: {
+                        this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val as number)));
+                        break;
+                    }
+                    case BaseType.kString: {
+                        this.vpc.print("" + argVal.val);
+                        break;
+                    }
+                    default: {
+                        this.vpc.print(fixupNumberForPrinting("" + argVal.val));
+                        break;
                     }
                 }
                 break;
@@ -1696,6 +1703,10 @@ ${listing}
             case InstructionID.SPACE: {
                 const n = this.read(args[1]).numVal();
                 this.save(args[0], VariableValue.newString(" ".repeat(n)));
+                break;
+            }
+            case InstructionID.ON_ERROR_GOTO: {
+                this.onErrorLine = args[0];
                 break;
             }
             case InstructionID.NOP: {
