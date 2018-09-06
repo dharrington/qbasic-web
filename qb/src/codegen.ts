@@ -50,7 +50,15 @@ class GotoInfo {
     public label: string | undefined;
     public target: BranchTarget | undefined;
     public token: Token;
-    constructor(public inst: vm.Instruction) { }
+    public globalLabel?: boolean;
+    constructor(public sourceBlock: BlockInfo, public inst: vm.Instruction) { }
+    setLabelOrLineNumber(target: string | number) {
+        if (typeof (target) === 'string') {
+            this.label = target;
+        } else {
+            this.lineNumber = target;
+        }
+    }
 }
 
 class SubroutineInfo {
@@ -67,6 +75,7 @@ class BlockInfo {
     public inst: vm.Instruction[] = [];
     public instToLine = new Map<number, number>();
     public startShift = 0;
+    public statementOffsets: number[] = [];
 
     setStartPC(pc: number) {
         for (const i of this.inst) {
@@ -74,18 +83,14 @@ class BlockInfo {
                 i.args[0] += pc - this.startPc;
             }
         }
+        for (let i = 0; i < this.statementOffsets.length; i++) {
+            this.statementOffsets[i] += pc - this.startPc;
+        }
         this.startPc = pc;
     }
 
     insertInstructions(pos: number, count: number) {
         if (count <= 0) return;
-        for (const inst of this.inst) {
-            if (!vm.BranchInstructions.has(inst.id)) continue;
-            const n = inst.args[0] as number;
-            if (n > pos) {
-                inst.args[0] = n + count;
-            }
-        }
         for (let i = 0; i < count; i++) {
             this.inst.push(undefined as any);
         }
@@ -97,6 +102,9 @@ class BlockInfo {
                 this.instToLine.delete(i - count);
                 this.instToLine.set(i, line);
             }
+        }
+        for (let i = 0; i < this.statementOffsets.length; i++) {
+            this.statementOffsets[i] += count;
         }
     }
 
@@ -278,7 +286,7 @@ export class CodegenCtx implements ICtx {
     constructor() {
         this.blockInfo.startPc = 0;
     }
-    setLocator(locator: ILocator) {
+    setLocator(locator: ILocator): void {
         this.g.locator = locator;
     }
     program(): vm.Program { return this.g.program; }
@@ -327,8 +335,8 @@ export class CodegenCtx implements ICtx {
     }
     newStmt() {
         const offset = this.blockInfo.inst.length;
-        if (this.g.program.statementOffsets.length === 0 || this.g.program.statementOffsets[this.g.program.statementOffsets.length - 1] !== offset) {
-            this.g.program.statementOffsets.push(offset);
+        if (this.blockInfo.statementOffsets.length === 0 || this.blockInfo.statementOffsets[this.blockInfo.statementOffsets.length - 1] !== offset) {
+            this.blockInfo.statementOffsets.push(offset);
         }
     }
     data(dataArray: Val[]) {
@@ -1264,25 +1272,38 @@ export class CodegenCtx implements ICtx {
         }
         this.ctrlFlowStack.pop();
     }
-    onErrorGoto(target: number | string) {
-        const g = new GotoInfo(this.emit(vm.InstructionID.ON_ERROR_GOTO, 0));
+    onErrorGoto(target: number | string, tok: Token) {
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.ON_ERROR_GOTO, 0));
         if (typeof target === 'string') {
             g.label = target;
         } else {
             g.lineNumber = target;
         }
+        g.token = tok;
         this.g.gotos.push(g);
     }
     gotoLine(no: number, tok: Token) {
-        const g = new GotoInfo(this.emit(vm.InstructionID.BRANCH, 0));
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.BRANCH, 0));
         g.lineNumber = no;
         g.token = tok;
         this.g.gotos.push(g);
     }
     gotoLabel(lbl: Token) {
-        const g = new GotoInfo(this.emit(vm.InstructionID.BRANCH, 0));
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.BRANCH, 0));
         g.label = lbl.text;
         g.token = lbl;
+        this.g.gotos.push(g);
+    }
+    resumeNext(): void {
+        this.write(vm.InstructionID.RESUME_NEXT);
+    }
+    resume(): void {
+        this.write(vm.InstructionID.RESUME);
+    }
+    resumeGoto(target: string | number, tok: Token): void {
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.RESUME_GOTO, 0))
+        g.setLabelOrLineNumber(target);
+        g.globalLabel = true;
         this.g.gotos.push(g);
     }
     goReturn(token: Token | undefined, lbl: number | string | undefined) {
@@ -1290,23 +1311,15 @@ export class CodegenCtx implements ICtx {
             this.emit(vm.InstructionID.EXIT_SUB);
             return;
         }
-        const g = new GotoInfo(this.emit(vm.InstructionID.RETURN, 0/*pc*/));
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.RETURN, 0/*pc*/));
         if (token) g.token = token;
-        if (typeof (lbl) === "number") {
-            g.lineNumber = lbl;
-        } else if (lbl !== undefined) {
-            g.label = lbl;
-        }
+        g.setLabelOrLineNumber(lbl);
         this.g.gotos.push(g);
     }
     gosub(token: Token, lbl: number | string) {
-        const g = new GotoInfo(this.emit(vm.InstructionID.GOSUB, 0/*pc*/, this.stackOffset));
+        const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.GOSUB, 0/*pc*/, this.stackOffset));
         g.token = token;
-        if (typeof (lbl) === "number") {
-            g.lineNumber = lbl;
-        } else {
-            g.label = lbl;
-        }
+        g.setLabelOrLineNumber(lbl);
         this.g.gotos.push(g);
     }
     locate(x: Val, y: Val) {
@@ -1601,6 +1614,15 @@ export class CodegenCtx implements ICtx {
                     this.error("label not found", g.token);
                     continue;
                 }
+                if (g.globalLabel) {
+                    if (target.block !== this.blockInfo) {
+                        this.error("label not at module level", g.token);
+                    }
+                } else {
+                    if (target.block !== g.sourceBlock) {
+                        this.error("label not in this block"), g.token;
+                    }
+                }
             } else if (g.lineNumber !== undefined) {
                 target = this.g.lineNumbers.get(g.lineNumber);
                 if (target === undefined) {
@@ -1620,6 +1642,12 @@ export class CodegenCtx implements ICtx {
         for (const b of allBlocks) {
             for (const inst of b.inst) {
                 prog.inst.push(inst);
+            }
+            for (const offset of b.statementOffsets) {
+                prog.statementOffsets.push(offset);
+            }
+            for (const instToLine of b.instToLine) {
+                prog.instToLine.set(instToLine[0], instToLine[1]);
             }
         }
         this.finalized = true;
@@ -1882,7 +1910,7 @@ export class CodegenCtx implements ICtx {
         return new BranchTarget(this.blockInfo, this.blockInfo.inst.length);
     }
     private recordBranchTarget(target: BranchTarget, inst: vm.Instruction): void {
-        const info = new GotoInfo(inst);
+        const info = new GotoInfo(this.blockInfo, inst);
         info.target = target;
         this.g.gotos.push(info);
     }

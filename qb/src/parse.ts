@@ -170,78 +170,82 @@ export interface ILocator {
 // The parser is fairly dumb, and just relays information to a context. The primary purpose of the context is to
 // generate code, but there are other activities you might perform, like syntax highlighting or autocompletion.
 export interface ICtx {
-    setLocator(locator: ILocator);
+    setLocator(locator: ILocator): void;
     // Called after parsing the entire program.
-    finalize();
-    error(message: string, loc: Location);
-    defineType(id: Token, t: Type);
+    finalize(): void;
+    error(message: string, loc: Location): void;
+    defineType(id: Token, t: Type): void;
     typename(tok: Token): Type | undefined;
-    label(tok: Token);
+    label(tok: Token): void;
     lineNumber(num: number, tok: Token);
-    newline(lineNumber: number);
-    newStmt();
-    data(dataArray: Val[]);
-    read(args: Val[]);
-    restore(label: number | string);
+    newline(lineNumber: number): void;
+    newStmt(): void;
+    data(dataArray: Val[]): void;
+    read(args: Val[]): void;
+    restore(label: number | string): void;
     variable(varName: Token, sigil: BaseType, defaultType?: Type): MVal;
-    declConst(id: Token, ty: BaseType, value: Val);
+    declConst(id: Token, ty: BaseType, value: Val): void;
     index(v: Val, idx: Val[]): MVal;
     // x.field
     indexField(v: Val, idx: Token): MVal;
-    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean);
+    dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean): void;
     op(name: string, operands: Val[]): MVal;
     sub(id: Token, args: Val[]): ICtx;
-    subExit();
+    subExit(): void;
     functionBegin(id: Token, sigil: BaseType, returnType: Type, args: Val[], singleLine: boolean): ICtx;
-    functionExit();
+    functionExit(): void;
     declArg(id: Token, isArray: boolean, ty: Type | undefined, dimmedType: boolean): Val;
-    endSub();
-    endFunction();
-    declSub(id: Token, args: Val[]);
-    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]);
+    endSub(): void;
+    endFunction(): void;
+    declSub(id: Token, args: Val[]): void;
+    declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]): void;
     isSub(id: string): boolean;
     isConst(id: string): boolean;
     lookupFunction(id: string): FunctionType | undefined;
-    callSub(id: Token, args: Val[]);
+    callSub(id: Token, args: Val[]): void;
     callFunction(id: string, args: Val[]): MVal;
-    input(keepCursor: boolean, prompt: string, args: Val[]);
-    ifBegin(cond: Val);
-    elseBegin(cond?: Val);
-    ifEnd();
-    selectBegin(v: Val);
-    selectCase(vs: Val[]);
-    selectCaseElse();
-    selectEnd();
-    forBegin(idx: Val, f: Val, t: Val, st: Val);
-    forExit();
-    forEnd();
-    doBegin();
-    doWhileCond(whileCond: Val);
-    doExit();
-    doEnd(whileCond: Val);
-    whileBegin();
-    whileCond(cond: Val);
-    wend();
-    onErrorGoto(target: number | string);
-    gotoLine(no: number, numberToken: Token);
-    gotoLabel(lbl: Token);
-    goReturn(token: Token | undefined, lbl: number | string | undefined);
-    gosub(token: Token, lbl: number | string);
-    color(fore?: Val, back?: Val);
-    line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val);
-    circle(center: Coord, radius: Val, color?: Val);
-    paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal);
-    draw(expr: Val);
-    getGraphics(a: Coord, b: Coord, id: Token);
-    putGraphics(a: Coord, id: Token);
-    pset(a: Coord, color: MVal);
-    locate(x?: Val, y?: Val); // TODO: more parameters
-    screen(id: Val);
-    palette(attr?: Val, col?: Val);
-    sleep(delay?: Val);
-    endStmt();
-    randomize(seed: Val);
-    end();
+    input(keepCursor: boolean, prompt: string, args: Val[]): void;
+    ifBegin(cond: Val): void;
+    elseBegin(cond?: Val): void;
+    ifEnd(): void;
+    selectBegin(v: Val): void;
+    selectCase(vs: Val[]): void;
+    selectCaseElse(): void;
+    selectEnd(): void;
+    forBegin(idx: Val, f: Val, t: Val, st: Val): void;
+    forExit(): void;
+    forEnd(): void;
+    doBegin(): void;
+    doWhileCond(whileCond: Val): void;
+    doExit(): void;
+    doEnd(whileCond: Val): void;
+    whileBegin(): void;
+    whileCond(cond: Val): void;
+    wend(): void;
+    onErrorGoto(target: number | string, tok: Token): void;
+    gotoLine(no: number, numberToken: Token): void;
+    gotoLabel(lbl: Token): void;
+    goReturn(token: Token | undefined, lbl: number | string | undefined): void;
+    gosub(token: Token, lbl: number | string): void;
+    color(fore?: Val, back?: Val): void;
+    line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val): void;
+    circle(center: Coord, radius: Val, color?: Val): void;
+    paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal): void;
+    draw(expr: Val): void;
+    getGraphics(a: Coord, b: Coord, id: Token): void;
+    putGraphics(a: Coord, id: Token): void;
+    pset(a: Coord, color: MVal): void;
+    locate(x?: Val, y?: Val): void; // TODO: more parameters
+    screen(id: Val): void;
+    palette(attr?: Val, col?: Val): void;
+    sleep(delay?: Val): void;
+    endStmt(): void;
+    randomize(seed: Val): void;
+    resumeNext(): void;
+    resume(): void;
+    resumeGoto(target: string | number, tok: Token): void;
+
+    end(): void;
 }
 
 export function parse(ctx: ICtx, tokens: Token[]) {
@@ -1639,11 +1643,28 @@ class Parser implements ILocator {
         this.expectIdent("ON");
         if (this.nextIf("ERROR")) {
             this.expectIdent("GOTO");
+            const tok = this.tok();
             const target = this.labelOrLineNumber();
             if (!target) {
                 return;
             }
-            this.ctx.onErrorGoto(target);
+            this.ctx.onErrorGoto(target, tok);
+        }
+    }
+    resumeStmt() {
+        this.expectIdent("RESUME");
+        if (this.nextIf("NEXT")) {
+            this.ctx.resumeNext();
+            return;
+        }
+        if (this.isEol()) {
+            this.ctx.resume();
+            return;
+        }
+        const tok = this.tok();
+        const target = this.labelOrLineNumber();
+        if (target) {
+            this.ctx.resumeGoto(target, tok);
         }
     }
     sleepStmt() {
@@ -1785,6 +1806,7 @@ class Parser implements ILocator {
                 case "RESTORE": this.restoreStmt(); break;
                 case "DEF": this.defStmt(); break;
                 case "ON": this.onStmt(); break;
+                case "RESUME": this.resumeStmt(); break;
                 // TODO:
                 case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
                 case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;

@@ -1,0 +1,17 @@
+ON ERROR GOTO handler
+
+DIM X(10)
+X(0)=123
+I=200
+PRINT "X(200):"; X(I)
+PRINT "End"
+END
+
+handler: 
+PRINT "GOT ERROR, RESUME: ";
+I=0
+RESUME
+
+REM output
+X(200):GOT ERROR, RESUME: X(200): 123 
+End

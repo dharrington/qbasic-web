@@ -1,0 +1,14 @@
+ON ERROR GOTO handler
+
+DIM X(10)
+PRINT "X(200):"; X(200)
+PRINT "Resumed next!"
+END
+
+handler: 
+PRINT "GOT ERROR, RESUME NEXT"
+RESUME NEXT
+
+REM output
+X(200):GOT ERROR, RESUME NEXT
+Resumed next!

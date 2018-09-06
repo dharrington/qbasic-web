@@ -377,6 +377,9 @@ export enum InstructionID {
     SPACE, // S S
     LOG, // S
     ON_ERROR_GOTO, // PC
+    RESUME,
+    RESUME_NEXT,
+    RESUME_GOTO,
     NOP,
 }
 
@@ -396,7 +399,7 @@ export const ConstExprInstructions = new Set([
 ]);
 
 export const BranchInstructions = new Set([InstructionID.BRANCH_IFNOT, InstructionID.BRANCH, InstructionID.CALL_SUB,
-InstructionID.GOSUB, InstructionID.CALL_FUNCTION, InstructionID.RETURN, InstructionID.ON_ERROR_GOTO]);
+InstructionID.GOSUB, InstructionID.CALL_FUNCTION, InstructionID.RETURN, InstructionID.ON_ERROR_GOTO, InstructionID.RESUME_GOTO]);
 
 const kIntMax = 32767;
 const kIntMin = -32768;
@@ -704,6 +707,7 @@ export class Instruction {
                 return "";
             case InstructionID.RETURN:  // PC
             case InstructionID.ON_ERROR_GOTO: // PC
+            case InstructionID.RESUME_GOTO:
             case InstructionID.BRANCH:  // PC
                 return "PC";
             case InstructionID.READ:  // S BaseType
@@ -904,6 +908,20 @@ export class Program {
         }
         return output.join("\n");
     }
+    instructionOffsetToStatementIndex(instOffset: number): number {
+        for (let i = 1; i < this.statementOffsets.length; i++) {
+            if (this.statementOffsets[i] > instOffset) {
+                return i - 1;
+            }
+        }
+        return this.statementOffsets.length - 1;
+    }
+    statementIndexToInstructionOffset(statementIndex: number): number {
+        if (statementIndex >= this.statementOffsets.length) {
+            return 0;
+        }
+        return this.statementOffsets[statementIndex];
+    }
 }
 
 // A stack frame.
@@ -961,12 +979,13 @@ export class Execution {
 
     private frame: Frame = new Frame();
     private moduleFrame: Frame = this.frame;
-    private onErrorLine: number | undefined;
+    private onErrorPC: number | undefined;
     private inRun: boolean;
     private lastPointX: number = 0;
     private lastPointY: number = 0;
     private rnd: Rnd = new Rnd();
     private readPos = 0;
+    private errorInstructionOffset: number | undefined;
     constructor(private prog: Program, private vpc: IVirtualPC) {
         for (const d of prog.data) {
             this.stack.push(d.copySingle());
@@ -1054,11 +1073,12 @@ ${listing}
         return this.prog.instructionLineNumber(this.frame.pc);
     }
     raise(err) {
-        if (this.onErrorLine !== undefined) {
+        if (this.onErrorPC !== undefined) {
             while (this.frame.parent) {
                 this.frame = this.frame.parent;
             }
-            this.frame.pc = this.onErrorLine;
+            this.errorInstructionOffset = this.frame.pc;
+            this.frame.pc = this.onErrorPC;
             return;
         }
         this.exception = err;
@@ -1706,7 +1726,30 @@ ${listing}
                 break;
             }
             case InstructionID.ON_ERROR_GOTO: {
-                this.onErrorLine = args[0];
+                this.onErrorPC = args[0];
+                break;
+            }
+            case InstructionID.RESUME: {
+                if (this.errorInstructionOffset !== undefined) {
+                    const statementOffset = this.prog.instructionOffsetToStatementIndex(this.errorInstructionOffset);
+                    this.frame.pc = this.prog.statementIndexToInstructionOffset(statementOffset);
+                    this.errorInstructionOffset = undefined;
+                }
+                break;
+            }
+            case InstructionID.RESUME_NEXT: {
+                if (this.errorInstructionOffset !== undefined) {
+                    const statementOffset = this.prog.instructionOffsetToStatementIndex(this.errorInstructionOffset);
+                    this.frame.pc = this.prog.statementIndexToInstructionOffset(statementOffset + 1);
+                    this.errorInstructionOffset = undefined;
+                }
+                break;
+            }
+            case InstructionID.RESUME_GOTO: {
+                if (this.errorInstructionOffset !== undefined) {
+                    this.frame.pc = args[0];
+                    this.errorInstructionOffset = undefined;
+                }
                 break;
             }
             case InstructionID.NOP: {
@@ -1728,5 +1771,13 @@ ${listing}
         }
         return true;
     }
+    private resume(previousPC: number) {
+        const statementOffset = this.prog.instructionOffsetToStatementIndex(previousPC);
+        this.frame.pc = this.prog.statementIndexToInstructionOffset(statementOffset);
+        this.errorInstructionOffset = undefined;
+    }
+    private resumeNext(previousPC: number) {
 
+        this.errorInstructionOffset = undefined;
+    }
 }
