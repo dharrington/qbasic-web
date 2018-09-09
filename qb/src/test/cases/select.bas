@@ -35,8 +35,24 @@ SELECT CASE X$
     PRINT Y$
 END SELECT
 
+SELECT CASE X$
+  CASE "A" TO "G"
+    PRINT "SHOULD NOT BE IN RANGE"
+  CASE "H" TO "I"
+    PRINT "IN RANGE"
+END SELECT
+
+SELECT CASE 5
+  CASE IS < 10
+    PRINT "5 is less than 10"
+  CASE IS > 10
+    PRINT "5 is greater than 10???"
+END SELECT
+
 REM output
 5
 first
 second
 last
+IN RANGE
+5 is less than 10

@@ -38,7 +38,7 @@ export interface IVirtualPC {
     setForeColor(fc: number);
     setBackColor(bc: number);
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number);
-    circle(x: number, y: number, radius: number, color: number | undefined);
+    circle(x: number, y: number, radius: number, color: number | undefined, start: number, end: number, aspect: number);
     paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined);
     pset(x: number, y: number, color?: number);
     draw(currentX: number, currentY: number, instructions: DrawInstruction[]);
@@ -374,6 +374,7 @@ export enum InstructionID {
     RTRIM, // S S
     LCASE, // S S
     UCASE, // S S
+    INSTR, // S S S
     SPACE, // S S
     LOG, // S
     ON_ERROR_GOTO, // PC
@@ -729,7 +730,7 @@ export class Instruction {
                 if (offset < 3) return "S";
                 return "ActionVerb";
             case InstructionID.COPY: // S S
-            case InstructionID.CIRCLE: // S S S S
+            case InstructionID.CIRCLE: // S S S S S? S? S?
             case InstructionID.PAINT: // S S S S
             case InstructionID.DRAW: // S
             case InstructionID.ADDRESS:  // S S
@@ -795,6 +796,7 @@ export class Instruction {
             case InstructionID.RTRIM:  // S S
             case InstructionID.LCASE:  // S S
             case InstructionID.UCASE:  // S S
+            case InstructionID.INSTR:  // S S S
             case InstructionID.SPACE:  // S S
             case InstructionID.LOG:  // S
             case InstructionID.INPUT_FUNC: // S S
@@ -1430,8 +1432,8 @@ ${listing}
                 break;
             }
             case InstructionID.COLOR: {
-                const fc = Math.trunc(this.read(args[0]).numVal());
-                const bc = Math.trunc(this.read(args[1]).numVal());
+                const fc = Math.round(this.read(args[0]).numVal());
+                const bc = Math.round(this.read(args[1]).numVal());
                 if (fc >= 0) {
                     this.vpc.setForeColor(fc);
                 }
@@ -1444,8 +1446,8 @@ ${listing}
                 if (args.length < 2) {
                     this.vpc.resetPalette();
                 } else {
-                    const attr = Math.trunc(this.read(args[0]).numVal());
-                    const color = Math.trunc(this.read(args[1]).numVal());
+                    const attr = Math.round(this.read(args[0]).numVal());
+                    const color = Math.round(this.read(args[1]).numVal());
                     this.vpc.setPaletteAttribute(attr, color);
                 }
                 break;
@@ -1463,9 +1465,9 @@ ${listing}
                 if (args[2] !== undefined) paintColor = this.read(args[2]).numVal();
                 if (args[3] !== undefined) borderColor = this.read(args[3]).numVal();
 
-                this.vpc.paint(Math.trunc(x), Math.trunc(y), paintColor, borderColor);
-                this.lastPointX = Math.trunc(x);
-                this.lastPointY = Math.trunc(y);
+                this.vpc.paint(Math.round(x), Math.round(y), paintColor, borderColor);
+                this.lastPointX = Math.round(x);
+                this.lastPointY = Math.round(y);
                 break;
             }
             case InstructionID.CIRCLE: {
@@ -1473,14 +1475,34 @@ ${listing}
                 const y = this.read(args[1]).numVal();
                 const r = this.read(args[2]).numVal();
                 let color: number | undefined;
+                let start = 0;
+                let end = Math.PI * 2;
+                let aspect = 1;
                 if (args[3] !== undefined) {
                     color = this.read(args[3]).numVal();
-                    color = Math.trunc(color as number);
+                    color = Math.round(color as number);
+                }
+                if (args[4] !== undefined) {
+                    start = this.read(args[4]).numVal();
+                    if (start > Math.PI * 2 || start < -Math.PI * 2) {
+                        this.raise("invalid call");
+                        break;
+                    }
+                }
+                if (args[5] !== undefined) {
+                    end = this.read(args[5]).numVal();
+                    if (end > Math.PI * 2 || end < -Math.PI * 2) {
+                        this.raise("invalid call");
+                        break;
+                    }
+                }
+                if (args[6] !== undefined) {
+                    aspect = this.read(args[6]).numVal();
                 }
 
-                this.vpc.circle(Math.trunc(x), Math.trunc(y), Math.trunc(r), color);
-                this.lastPointX = Math.trunc(x);
-                this.lastPointY = Math.trunc(y);
+                this.vpc.circle(Math.round(x), Math.round(y), Math.round(r), color, start, end, aspect);
+                this.lastPointX = Math.round(x);
+                this.lastPointY = Math.round(y);
                 break;
             }
             case InstructionID.LINE: {
@@ -1491,7 +1513,7 @@ ${listing}
                 let color: number | undefined;
                 if (args[4] !== undefined) {
                     color = this.read(args[4]).numVal();
-                    color = Math.trunc(color as number);
+                    color = Math.round(color as number);
                 }
                 let type = LineType.kLine;
                 if (args[5] !== undefined) {
@@ -1505,9 +1527,9 @@ ${listing}
                 if (args[6] !== undefined) {
                     style = this.read(args[6]).numVal();
                 }
-                this.vpc.line(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), color, type, style);
-                this.lastPointX = Math.trunc(x2);
-                this.lastPointY = Math.trunc(y2);
+                this.vpc.line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), color, type, style);
+                this.lastPointX = Math.round(x2);
+                this.lastPointY = Math.round(y2);
                 break;
             }
             case InstructionID.DRAW: {
@@ -1536,7 +1558,7 @@ ${listing}
                     this.raise("not implemented");
                     break;
                 }
-                const data = this.vpc.getGraphics(Math.trunc(x1), Math.trunc(y1), Math.trunc(x2), Math.trunc(y2), dims[0] * 2);
+                const data = this.vpc.getGraphics(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), dims[0] * 2);
                 if (!data) {
                     this.raise("invalid call");
                     break;
@@ -1574,7 +1596,7 @@ ${listing}
                         data[i + 1] = (n / 256) % 256;
                     }
                 }
-                this.vpc.putGraphics(Math.trunc(x), Math.trunc(y), data, actionVerb);
+                this.vpc.putGraphics(Math.round(x), Math.round(y), data, actionVerb);
                 break;
             }
             case InstructionID.PSET: {
@@ -1583,11 +1605,11 @@ ${listing}
                 let color: number | undefined;
                 if (args[2] !== undefined) {
                     color = this.read(args[2]).numVal();
-                    color = Math.trunc(color as number);
+                    color = Math.round(color as number);
                 }
-                this.vpc.pset(Math.trunc(x), Math.trunc(y), color);
-                this.lastPointX = Math.trunc(x);
-                this.lastPointY = Math.trunc(y);
+                this.vpc.pset(Math.round(x), Math.round(y), color);
+                this.lastPointX = Math.round(x);
+                this.lastPointY = Math.round(y);
                 break;
             }
             case InstructionID.CLS: {
@@ -1596,7 +1618,7 @@ ${listing}
             }
             case InstructionID.SCREEN: {
                 const id = this.read(args[0]).numVal();
-                this.vpc.screen(Math.trunc(id));
+                this.vpc.screen(Math.round(id));
                 break;
             }
             case InstructionID.SLEEP: {
@@ -1714,6 +1736,17 @@ ${listing}
             }
             case InstructionID.UCASE: {
                 this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().toUpperCase()));
+                break;
+            }
+            case InstructionID.INSTR: {
+                const start = this.read(args[1]).numVal();
+                const str = this.read(args[2]).strVal();
+                const search = this.read(args[3]).strVal();
+                if (search === "") {
+                    this.save(args[0], VariableValue.newInt(start));
+                } else {
+                    this.save(args[0], VariableValue.newInt(str.indexOf(search, start - 1) + 1));
+                }
                 break;
             }
             case InstructionID.LCASE: {

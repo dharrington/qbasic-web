@@ -14,7 +14,7 @@
 
 // codegen.ts - Generates code for QBasic programs.
 
-import { basicType, Coord, ICtx, ILocator, kNullVal, Location, MVal, Token, Val, ValKind } from "./parse";
+import { basicType, CaseCondition, Coord, ICtx, ILocator, kNullVal, Location, MVal, Token, Val, ValKind } from "./parse";
 import { BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 import * as vm from "./vm";
 
@@ -148,7 +148,6 @@ class RestoreInfo {
 // Data shared by all instances of CodegenCtx when parsing a program.
 class GlobalCtx {
     public functions = new Map<string, FunctionInfo>();
-    public builtinSubs = new Map<string, FunctionInfo>();
     public types: Map<string, Type> = new Map<string, Type>();
     public subs: Map<string, SubroutineInfo> = new Map<string, SubroutineInfo>();
     public constantVals = new Map<string, Val>();
@@ -169,69 +168,6 @@ class GlobalCtx {
     public constCount = 0;
 
     constructor() {
-        this.builtinSubs.set("__LOG",
-            FunctionInfo.builtin(new FunctionType(kIntType, [kStringType]), vm.InstructionID.LOG));
-
-        this.functions.set("MID",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType, kLongType], 1), vm.InstructionID.MID));
-        this.functions.set("RIGHT",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType]), vm.InstructionID.RIGHT));
-        this.functions.set("LEFT",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType, kLongType]), vm.InstructionID.LEFT));
-        this.functions.set("CHR",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kLongType]), vm.InstructionID.CHR));
-        this.functions.set("ASC",
-            FunctionInfo.builtin(new FunctionType(kIntType, [kStringType]), vm.InstructionID.ASC));
-        this.functions.set("RND",
-            FunctionInfo.builtin(new FunctionType(kSingleType, [kIntType], 1), vm.InstructionID.RND));
-        this.functions.set("INT",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.INT));
-        this.functions.set("FIX",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.FIX));
-        this.functions.set("INKEY",
-            FunctionInfo.builtin(new FunctionType(kStringType, []), vm.InstructionID.INKEY));
-        this.functions.set("INPUT",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kIntType]), vm.InstructionID.INPUT_FUNC));
-        this.functions.set("VAL",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kStringType]), vm.InstructionID.VAL));
-        this.functions.set("STR",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kDoubleType]), vm.InstructionID.STR));
-        this.functions.set("TAN",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.TAN));
-        this.functions.set("SIN",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.SIN));
-        this.functions.set("COS",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.COS));
-        this.functions.set("ATN",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.ATN));
-        this.functions.set("CINT",
-            FunctionInfo.builtin(new FunctionType(kIntType, [kDoubleType]), vm.InstructionID.CINT));
-        this.functions.set("CLNG",
-            FunctionInfo.builtin(new FunctionType(kLongType, [kDoubleType]), vm.InstructionID.CLNG));
-        this.functions.set("CDBL",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.CDBL));
-        this.functions.set("CSNG",
-            FunctionInfo.builtin(new FunctionType(kSingleType, [kDoubleType]), vm.InstructionID.CSNG));
-        this.functions.set("EXP",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType]), vm.InstructionID.EXP));
-        this.functions.set("TIMER",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, []), vm.InstructionID.TIMER));
-        this.functions.set("LEN",
-            FunctionInfo.builtin(new FunctionType(kLongType, [kStringType]), vm.InstructionID.LEN));
-        this.functions.set("LTRIM",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LTRIM));
-        this.functions.set("RTRIM",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.RTRIM));
-        this.functions.set("UCASE",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.UCASE));
-        this.functions.set("LCASE",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kStringType]), vm.InstructionID.LCASE));
-        this.functions.set("SPACE",
-            FunctionInfo.builtin(new FunctionType(kStringType, [kIntType]), vm.InstructionID.SPACE));
-        this.functions.set("PEEK",
-            FunctionInfo.builtin(new FunctionType(kIntType, [kIntType]), vm.InstructionID.NOP));
-        this.functions.set("FRE",
-            FunctionInfo.builtin(new FunctionType(kDoubleType, [kDoubleType])));
     }
 }
 
@@ -988,7 +924,6 @@ export class CodegenCtx implements ICtx {
         this.write(vm.InstructionID.EXIT_SUB);
     }
     isSub(id: string): boolean {
-        if (this.g.builtinSubs.has(id)) return true;
         return this.g.subs.has(id);
     }
     isConst(id: string): boolean {
@@ -1003,11 +938,6 @@ export class CodegenCtx implements ICtx {
         return f.type;
     }
     callSub(id: Token, args: Val[]) {
-        const builtin = this.g.builtinSubs.get(id.text);
-        if (builtin) {
-            this.write(builtin.builtinOp as vm.InstructionID, ...args);
-            return;
-        }
         const sub = this.g.subs.get(id.text);
         if (!sub) {
             this.error("not a subroutine");
@@ -1033,6 +963,54 @@ export class CodegenCtx implements ICtx {
         sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, callStackOffset));
     }
 
+    callBuiltin(id: string, args: Val[]): MVal {
+        const callWithReturn = (instId: vm.InstructionID, returnType: Type, args: Val[]) => {
+            const result = this.newStackValue(returnType);
+            this.write(instId, result, ...args);
+            return result;
+        };
+        const callNoReturn = (instId: vm.InstructionID, args: Val[]) => {
+            this.write(instId, ...args);
+            return undefined;
+        };
+        switch (id) {
+            case "__LOG": return callNoReturn(vm.InstructionID.LOG, args);
+            case "ASC": return callWithReturn(vm.InstructionID.ASC, kIntType, args);
+            case "ATN": return callWithReturn(vm.InstructionID.ATN, kDoubleType, args);
+            case "CDBL": return callWithReturn(vm.InstructionID.CDBL, kDoubleType, args);
+            case "CHR": return callWithReturn(vm.InstructionID.CHR, kStringType, args);
+            case "CINT": return callWithReturn(vm.InstructionID.CINT, kIntType, args);
+            case "CLNG": return callWithReturn(vm.InstructionID.CLNG, kLongType, args);
+            case "COS": return callWithReturn(vm.InstructionID.COS, kDoubleType, args);
+            case "CSNG": return callWithReturn(vm.InstructionID.CSNG, kSingleType, args);
+            case "EXP": return callWithReturn(vm.InstructionID.EXP, kDoubleType, args);
+            case "FIX": return callWithReturn(vm.InstructionID.FIX, kDoubleType, args);
+            case "FIX": return callWithReturn(vm.InstructionID.FIX, kDoubleType, args);
+            case "FRE": return undefined;
+            case "INKEY": return callWithReturn(vm.InstructionID.INKEY, kStringType, args);
+            case "INPUT": return callWithReturn(vm.InstructionID.INPUT_FUNC, kStringType, args);
+            case "INSTR": return callWithReturn(vm.InstructionID.INSTR, kIntType, args);
+            case "INT": return callWithReturn(vm.InstructionID.INT, kDoubleType, args);
+            case "LCASE": return callWithReturn(vm.InstructionID.LCASE, kStringType, args);
+            case "LEFT": return callWithReturn(vm.InstructionID.LEFT, kStringType, args);
+            case "LEN": return callWithReturn(vm.InstructionID.LEN, kLongType, args);
+            case "LTRIM": return callWithReturn(vm.InstructionID.LTRIM, kStringType, args);
+            case "MID": return callWithReturn(vm.InstructionID.MID, kStringType, args);
+            case "PEEK": return callWithReturn(vm.InstructionID.NOP, kIntType, args);
+            case "RIGHT": return callWithReturn(vm.InstructionID.RIGHT, kStringType, args);
+            case "RND": return callWithReturn(vm.InstructionID.RND, kSingleType, args);
+            case "RTRIM": return callWithReturn(vm.InstructionID.RTRIM, kStringType, args);
+            case "SIN": return callWithReturn(vm.InstructionID.SIN, kDoubleType, args);
+            case "SPACE": return callWithReturn(vm.InstructionID.SPACE, kStringType, args);
+            case "STR": return callWithReturn(vm.InstructionID.STR, kStringType, args);
+            case "TAN": return callWithReturn(vm.InstructionID.TAN, kDoubleType, args);
+            case "TIMER": return callWithReturn(vm.InstructionID.TIMER, kDoubleType, args);
+            case "UCASE": return callWithReturn(vm.InstructionID.UCASE, kStringType, args);
+            case "VAL": return callWithReturn(vm.InstructionID.VAL, kDoubleType, args);
+        }
+        this.error("not implemented");
+        return undefined;
+    }
     callFunction(id: string, args: Val[]): MVal {
         const f = this.g.functions.get(id);
         if (!f) return undefined;
@@ -1128,19 +1106,32 @@ export class CodegenCtx implements ICtx {
         this.ctrlFlowStack.push(flow);
         flow.selectValue = this.stackify(v, true);
     }
-    selectCase(vs: Val[]) {
+    selectCase(vs: CaseCondition[]) {
         const flow = this.ctrlFlow();
         if (!flow) return;
         if (flow.caseInstOffset.length > 0) {
             flow.endCaseInstructions.push(this.emit(vm.InstructionID.BRANCH, 0));
         }
         const testpc = this.branchTargetHere();
-        let testResult = this.op("=", [flow.selectValue, vs[0]]);
-        if (!testResult) return;
-        for (let i = 1; i < vs.length; ++i) {
-            const next = this.op("=", [flow.selectValue, vs[i]]);
-            if (!next || !testResult) return;
-            testResult = this.op("OR", [testResult, next]);
+        let testResult: Val | undefined;
+        for (const v of vs) {
+            let condResult: Val | undefined;
+            if (v.single) {
+                condResult = this.op("=", [flow.selectValue, v.single]);
+            } else if (v.range) {
+                const a = this.op(">=", [flow.selectValue, v.range[0]]);
+                const b = this.op("<=", [flow.selectValue, v.range[1]]);
+                if (!a || !b) return;
+                condResult = this.op("AND", [a, b]);
+            } else if (v.isExpr) {
+                condResult = this.op(v.isExpr[0].text, [flow.selectValue, v.isExpr[1]]);
+            }
+            if (!condResult) return;
+            if (testResult === undefined) {
+                testResult = condResult;
+            } else {
+                testResult = this.op("OR", [testResult, condResult]);
+            }
         }
 
         const branchpc = this.branchTargetHere();
@@ -1368,7 +1359,7 @@ export class CodegenCtx implements ICtx {
         }
         this.write(vm.InstructionID.PSET, ...args);
     }
-    circle(center: Coord, radius: Val, color?: Val) {
+    circle(center: Coord, radius: Val, color?: Val, start?: Val, end?: Val, aspect?: Val) {
         let x: Val;
         let y: Val;
         if (center.step) {
@@ -1383,7 +1374,7 @@ export class CodegenCtx implements ICtx {
             x = center.x;
             y = center.y;
         }
-        this.write(vm.InstructionID.CIRCLE, x, y, radius, color);
+        this.write(vm.InstructionID.CIRCLE, x, y, radius, color, start, end, aspect);
     }
     paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal) {
         // TODO: background
@@ -1455,7 +1446,7 @@ export class CodegenCtx implements ICtx {
     draw(expr: Val) {
         this.write(vm.InstructionID.DRAW, expr);
     }
-    getGraphics(a: Coord, b: Coord, id: Token) {
+    getGraphics(a: Coord, b: Coord, id: Token, sig: BaseType) {
         let x1: Val;
         let y1: Val;
         if (a.step) {
@@ -1481,14 +1472,17 @@ export class CodegenCtx implements ICtx {
             x2 = b.x;
             y2 = b.y;
         }
-        const variable = this.findVariable(id.text, BaseType.kNone);
+        const variable = this.findVariable(id.text, sig);
         if (!variable) {
             this.error("undefined variable", id.loc);
             return;
         }
         this.write(vm.InstructionID.GET_GRAPHICS, x1, y1, x2, y2, variable);
     }
-    putGraphics(a: Coord, id: Token) {
+    putGraphics(a: Coord, id: Token, sig: BaseType, verb: string) {
+        if (verb !== "PSET") {
+            this.error("not implemented");
+        }
         let x1: Val;
         let y1: Val;
         if (a.step) {
@@ -1503,7 +1497,7 @@ export class CodegenCtx implements ICtx {
             x1 = a.x;
             y1 = a.y;
         }
-        const variable = this.findVariable(id.text, BaseType.kNone);
+        const variable = this.findVariable(id.text, sig);
         if (!variable) {
             this.error("undefined variable", id.loc);
             return;

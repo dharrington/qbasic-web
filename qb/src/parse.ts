@@ -13,7 +13,7 @@
 // limitations under the License.
 
 import { Location, Token, TokenType } from "./lex";
-import { BaseType, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, sigilToBaseType, Type, UserTypeField } from "./types";
+import { baseTypeToSigil, BaseType, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, sigilToBaseType, Type, UserTypeField } from "./types";
 export { Location, Token } from "./lex";
 
 export function basicType(b?: BaseType): Type | undefined {
@@ -163,6 +163,11 @@ export class Coord {
 }
 
 export type MVal = Val | undefined;
+export class CaseCondition {
+    public single: MVal;
+    public range: [Val, Val] | undefined;
+    public isExpr: [Token, Val] | undefined;
+}
 
 export interface ILocator {
     currentLocation(): Location | undefined;
@@ -204,12 +209,13 @@ export interface ICtx {
     lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]): void;
     callFunction(id: string, args: Val[]): MVal;
+    callBuiltin(id: string, args: Val[]): MVal;
     input(keepCursor: boolean, prompt: string, args: Val[]): void;
     ifBegin(cond: Val): void;
     elseBegin(cond?: Val): void;
     ifEnd(): void;
     selectBegin(v: Val): void;
-    selectCase(vs: Val[]): void;
+    selectCase(vs: CaseCondition[]): void;
     selectCaseElse(): void;
     selectEnd(): void;
     forBegin(idx: Val, f: Val, t: Val, st: Val): void;
@@ -229,11 +235,11 @@ export interface ICtx {
     gosub(token: Token, lbl: number | string): void;
     color(fore?: Val, back?: Val): void;
     line(a: Coord, b: Coord, color?: Val, option?: string, style?: Val): void;
-    circle(center: Coord, radius: Val, color?: Val): void;
+    circle(center: Coord, radius: Val, color?: Val, start?: Val, end?: Val, aspect?: Val): void;
     paint(a: Coord, paintColor: MVal, borderColor: MVal, background: MVal): void;
     draw(expr: Val): void;
-    getGraphics(a: Coord, b: Coord, id: Token): void;
-    putGraphics(a: Coord, id: Token): void;
+    getGraphics(a: Coord, b: Coord, id: Token, sig: BaseType): void;
+    putGraphics(a: Coord, id: Token, sig: BaseType, verb: string): void;
     pset(a: Coord, color: MVal): void;
     locate(x?: Val, y?: Val): void; // TODO: more parameters
     screen(id: Val): void;
@@ -454,6 +460,7 @@ class Parser implements ILocator {
         if (!args) return undefined;
         return this.ctx.op("ABS", args);
     }
+
     maybeFunctionCall(): MVal {
         if (!this.tok(0).isIdent()) return undefined;
         const id = this.tok(0).text;
@@ -464,6 +471,56 @@ class Parser implements ILocator {
             tokenCount = 2;
         } else {
             tokenCount = 1;
+        }
+        switch (id) {
+            case "INSTR": {
+                this.next();
+                let args = this.callArgs(true, 2);
+                if (!args) return undefined;
+                if (args.length === 3) {
+                    args = this.prepareArgs(args, [kIntType, kStringType, kStringType]);
+                    if (!args) return undefined;
+                    return this.ctx.callBuiltin("INSTR", args);
+                } else if (args.length === 2) {
+                    args = this.prepareArgs(args, [kStringType, kStringType]);
+                    if (!args) return undefined;
+                    return this.ctx.callBuiltin("INSTR", [Val.newNumberLiteral(1, kIntType), ...args]);
+                } else {
+                    this.error("wrong number of arguments");
+                    return undefined;
+                }
+            }
+            case "ASC": return this.callBuiltinWithTypes("ASC", kIntType, [kStringType]);
+            case "ATN": return this.callBuiltinWithTypes("ATN", kDoubleType, [kDoubleType]);
+            case "CDBL": return this.callBuiltinWithTypes("CDBL", kDoubleType, [kDoubleType]);
+            case "CHR": return this.callBuiltinWithTypes("CHR", kStringType, [kLongType]);
+            case "CINT": return this.callBuiltinWithTypes("CINT", kIntType, [kDoubleType]);
+            case "CLNG": return this.callBuiltinWithTypes("CLNG", kLongType, [kDoubleType]);
+            case "COS": return this.callBuiltinWithTypes("COS", kDoubleType, [kDoubleType]);
+            case "CSNG": return this.callBuiltinWithTypes("CSNG", kSingleType, [kDoubleType]);
+            case "EXP": return this.callBuiltinWithTypes("EXP", kDoubleType, [kDoubleType]);
+            case "FIX": return this.callBuiltinWithTypes("FIX", kDoubleType, [kDoubleType]);
+            case "FIX": return this.callBuiltinWithTypes("FIX", kDoubleType, [kDoubleType]);
+            case "FRE": return this.callBuiltinWithTypes("FRE", undefined, [kDoubleType]);
+            case "INKEY": return this.callBuiltinWithTypes("INKEY", kStringType, []);
+            case "INPUT": return this.callBuiltinWithTypes("INPUT", kStringType, [kIntType]);
+            case "INT": return this.callBuiltinWithTypes("INT", kIntType, [kDoubleType]);
+            case "LCASE": return this.callBuiltinWithTypes("LCASE", kStringType, [kStringType]);
+            case "LEFT": return this.callBuiltinWithTypes("LEFT", kStringType, [kStringType, kLongType]);
+            case "LEN": return this.callBuiltinWithTypes("LEN", kIntType, [kStringType]);
+            case "LTRIM": return this.callBuiltinWithTypes("LTRIM", kStringType, [kStringType]);
+            case "MID": return this.callBuiltinWithTypes("MID", kStringType, [kStringType, kLongType, kLongType], 1);
+            case "PEEK": return this.callBuiltinWithTypes("PEEK", kIntType, [kIntType]);
+            case "RIGHT": return this.callBuiltinWithTypes("RIGHT", kStringType, [kStringType, kLongType]);
+            case "RND": return this.callBuiltinWithTypes("RND", kSingleType, [kIntType], 1);
+            case "RTRIM": return this.callBuiltinWithTypes("RTRIM", kStringType, [kStringType]);
+            case "SIN": return this.callBuiltinWithTypes("SIN", kDoubleType, [kDoubleType]);
+            case "SPACE": return this.callBuiltinWithTypes("SPACE", kStringType, [kIntType]);
+            case "STR": return this.callBuiltinWithTypes("STR", kStringType, [kDoubleType]);
+            case "TAN": return this.callBuiltinWithTypes("TAN", kDoubleType, [kDoubleType]);
+            case "TIMER": return this.callBuiltinWithTypes("TIMER", kDoubleType, []);
+            case "UCASE": return this.callBuiltinWithTypes("UCASE", kStringType, [kStringType]);
+            case "VAL": return this.callBuiltinWithTypes("VAL", kDoubleType, [kStringType]);
         }
         const func = this.ctx.lookupFunction(id);
         if (!func) return undefined;
@@ -986,11 +1043,35 @@ class Parser implements ILocator {
             block.usedElse = true;
             this.ctx.selectCaseElse();
         } else {
-            let cases: Val[] = [];
+            let cases: CaseCondition[] = [];
             do {
+                if (this.nextIf("IS")) {
+                    if (!(this.tok().isOp("<") || this.tok().isOp(">") || this.tok().isOp("=") || this.tok().isOp(">=") || this.tok().isOp("<="))) {
+                        this.error("expected comparison operator");
+                        return;
+                    }
+                    const op = this.tok();
+                    this.next();
+                    const rhs = this.expr();
+                    if (!rhs) return;
+                    let c = new CaseCondition();
+                    c.isExpr = [op, rhs];
+                    cases.push(c);
+                    continue;
+                }
                 const next = this.expr();
                 if (!next) return;
-                cases.push(next);
+                if (this.nextIf("TO")) {
+                    const to = this.expr();
+                    if (!to) return;
+                    let c = new CaseCondition();
+                    c.range = [next, to];
+                    cases.push(c);
+                } else {
+                    let c = new CaseCondition();
+                    c.single = next;
+                    cases.push(c);
+                }
             } while (this.nextIf(","));
             this.ctx.selectCase(cases);
         }
@@ -1152,6 +1233,60 @@ class Parser implements ILocator {
         this.ctx.endFunction();
         this.ctx = this.moduleCtx;
     }
+    checkArgTypes(args: Val[], wantTypes: Type[]): boolean {
+        if (args.length != wantTypes.length) {
+            this.error(`expected ${wantTypes.length} arguments`);
+            return false;
+        }
+        for (let i = 0; i < args.length; i++) {
+            if (wantTypes[i].isNumeric()) {
+                if (!args[i].type || !args[i].type.isNumeric()) {
+                    this.error(`expected numeric for argument ${i + 1}`);
+                    return false;
+                }
+            }
+            if (wantTypes[i].isString()) {
+                if (!args[i].type || !args[i].type.isString()) {
+                    this.error(`expected string for argument ${i + 1}`);
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+    prepareArgs(args: Val[], wantTypes: Type[]): Val[] | undefined {
+        if (args.length != wantTypes.length) {
+            this.error(`expected ${wantTypes.length} arguments`);
+            return undefined;
+        }
+        for (let i = 0; i < args.length; i++) {
+            if (wantTypes[i].isNumeric()) {
+                if (!args[i].type || !args[i].type.isNumeric()) {
+                    this.error(`expected numeric for argument ${i + 1}`);
+                    return undefined;
+                }
+            }
+            if (wantTypes[i].isString()) {
+                if (!args[i].type || !args[i].type.isString()) {
+                    this.error(`expected string for argument ${i + 1}`);
+                    return undefined;
+                }
+            }
+        }
+        return args;
+    }
+    callBuiltinWithTypes(builtinName: string, returnType: Type | undefined, types: Type[], requiredArgsCount: number = -1): MVal {
+        this.next();
+        if (returnType) {
+            const sigilStr = baseTypeToSigil(returnType.type);
+            if (sigilStr !== "") {
+                this.nextIf(sigilStr);
+            }
+        }
+        const args = this.callArgsWithTypes(types, requiredArgsCount);
+        if (!args) return undefined;
+        return this.ctx.callBuiltin(builtinName, args);
+    }
     callArgsWithTypes(types: Type[], requiredArgsCount: number = -1): Val[] | undefined {
         if (requiredArgsCount === -1) { requiredArgsCount = types.length; }
         const args = this.callArgs(true, requiredArgsCount);
@@ -1259,6 +1394,11 @@ class Parser implements ILocator {
         }
         const subNameTok = this.tok();
         const subName = subNameTok.text;
+        switch (subName) {
+            case "__LOG":
+                this.callBuiltinWithTypes("__LOG", undefined, [kStringType]);
+                return true;
+        }
         if (!this.ctx.isSub(subName)) { return false; }
         this.next();
         const args = this.callArgs(!!call);
@@ -1590,7 +1730,8 @@ class Parser implements ILocator {
         if (!this.expectOp(",")) return;
         const id = this.expectIdent();
         if (!id) return;
-        this.ctx.getGraphics(a, b, id);
+        const sig = this.maybeSigil();
+        this.ctx.getGraphics(a, b, id, sig);
     }
     putStmt() {
         this.expectIdent("PUT");
@@ -1599,7 +1740,18 @@ class Parser implements ILocator {
         if (!this.expectOp(",")) return;
         const id = this.expectIdent();
         if (!id) return;
-        this.ctx.putGraphics(a, id);
+        const sig = this.maybeSigil();
+        let verb = "PSET";
+        if (this.nextIf(",")) {
+            const verbTok = this.expectIdent();
+            if (!verbTok) return;
+            if (["PSET", "PRESET", "AND", "OR", "XOR"].indexOf(verbTok.text) < 0) {
+                this.error("expected PUT actionverb");
+                return;
+            }
+            verb = verbTok.text;
+        }
+        this.ctx.putGraphics(a, id, sig, verb);
     }
     circleStmt() {
         this.expectIdent("CIRCLE"); // TODO
@@ -1609,10 +1761,34 @@ class Parser implements ILocator {
         const r = this.numericExpr();
         if (!r) return;
         let color: MVal;
+        let start: MVal;
+        let end: MVal;
+        let aspect: MVal;
+        const hasParam = () => !this.isEol() && !this.tok().isOp(",");
+
         if (this.nextIf(",")) {
-            color = this.numericExpr();
+            if (hasParam()) {
+                color = this.numericExpr();
+                if (!color) return;
+            }
+            if (this.nextIf(",")) {
+                if (hasParam()) {
+                    start = this.numericExpr();
+                    if (!start) return;
+                }
+                if (this.nextIf(",")) {
+                    if (hasParam()) {
+                        end = this.numericExpr();
+                        if (!end) return;
+                    }
+                    if (this.nextIf(",")) {
+                        aspect = this.numericExpr();
+                        if (!aspect) return;
+                    }
+                }
+            }
         }
-        this.ctx.circle(a, r, color);
+        this.ctx.circle(a, r, color, start, end, aspect);
     }
     paintStmt() {
         this.expectIdent("PAINT"); // TODO
