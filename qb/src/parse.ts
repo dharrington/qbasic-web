@@ -209,7 +209,7 @@ export interface ICtx {
     lookupFunction(id: string): FunctionType | undefined;
     callSub(id: Token, args: Val[]): void;
     callFunction(id: string, args: Val[]): MVal;
-    callBuiltin(id: string, args: Val[]): MVal;
+    callBuiltin(id: string, args: (MVal | boolean | number)[]): MVal;
     input(keepCursor: boolean, prompt: string, args: Val[]): void;
     ifBegin(cond: Val): void;
     elseBegin(cond?: Val): void;
@@ -1645,9 +1645,9 @@ class Parser implements ILocator {
         if (!b) return;
         this.ctx.op("SWAP", [a, b]);
     }
-    coord(): Coord | undefined {
+    coord(allowStep = true): Coord | undefined {
         let step = false;
-        if (this.nextIf("STEP")) {
+        if (allowStep && this.nextIf("STEP")) {
             step = true;
         }
         if (!this.tok().isOp("(")) {
@@ -1676,8 +1676,72 @@ class Parser implements ILocator {
         }
         this.ctx.pset(a, color);
     }
+    pointStmt() {
+        this.expectIdent("POINT");
+        if (!this.expectOp("(")) return;
+        const first = this.numericExpr();
+        if (!first) return;
+        if (this.nextIf(",")) {
+            const second = this.numericExpr();
+            if (!second) return;
+            this.ctx.callBuiltin("POINT", [first, second]);
+            return;
+        }
+        this.ctx.callBuiltin("CURRENT_POINT", [first]);
+    }
+    viewStmt() {
+        this.expectIdent("VIEW");
+        if (this.nextIf("PRINT")) {
+            if (this.isEol()) {
+                this.ctx.callBuiltin("VIEW_PRINT", [undefined, undefined]);
+                return;
+            }
+            const top = this.numericExpr();
+            if (!top) return;
+            this.expectIdent("TO");
+            const bottom = this.numericExpr();
+            if (!bottom) return;
+            this.ctx.callBuiltin("VIEW_PRINT", [top, bottom]);
+            return;
+        }
+        const screen = this.nextIf("SCREEN");
+        const corner1 = this.coord(false);
+        if (!corner1) return;
+        this.expectOp("-");
+        const corner2 = this.coord(false);
+        if (!corner2) return;
+        let borderColor: MVal, border: MVal;
+        if (this.nextIf(",")) {
+            if (!this.tok().isOp(",")) {
+                borderColor = this.numericExpr();
+                if (!borderColor) return;
+            }
+            if (this.nextIf(",")) {
+                border = this.numericExpr();
+                if (!border) return;
+            }
+        }
+        this.ctx.callBuiltin("VIEW", [screen !== undefined, corner1.x, corner1.y, corner2.x, corner2.y, borderColor, border]);
+    }
+    lineInputStmt() {
+        // "LINE INPUT" already consumed
+        const initialSemi = this.nextIf(";");
+        let prompt: MVal;
+        if (this.tok().isString()) {
+            prompt = this.stringExpr();
+            if (!prompt) return;
+            this.expectOp(";");
+        }
+        const variable = this.varname();
+        if (!variable) return;
+        this.ctx.callBuiltin("LINE_INPUT", [Val.newNumberLiteral(initialSemi !== undefined ? 1 : 0, kIntType), prompt, variable]);
+    }
     lineStmt() {
         this.expectIdent("LINE");
+        if (this.nextIf("INPUT")) {
+            this.lineInputStmt();
+            return;
+        }
         let a: Coord | undefined;
         if (!this.nextIf("-")) {
             a = this.coord();
@@ -1979,12 +2043,15 @@ class Parser implements ILocator {
                 case "END": this.endStmt(); break;
                 case "DATA": this.dataStmt(); break;
                 case "READ": this.readStmt(); break;
+                case "BEEP": { this.expectIdent(); this.ctx.callBuiltin("BEEP", []); break; }
                 case "RESTORE": this.restoreStmt(); break;
                 case "DEF": this.defStmt(); break;
                 case "ON": this.onStmt(); break;
                 case "RESUME": this.resumeStmt(); break;
+                case "POINT": this.pointStmt(); break;
+                case "VIEW": this.viewStmt(); break;
                 // TODO:
-                case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "VIEW": case "POKE": case "PEEK": this.eatUntilNewline(); break;
+                case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "POKE": case "PEEK": this.eatUntilNewline(); break;
                 case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
                 default: handled = false;
             }

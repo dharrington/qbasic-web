@@ -35,6 +35,10 @@ export class DebugPC implements vm.IVirtualPC {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`PSET ${x} ${y}${colorStr}`);
     }
+    point(x: number, y: number): number {
+        this.graphicCalls.push(`POINT ${x} ${y}`);
+        return 0;
+    }
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: vm.LineType, style: number) {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`LINE ${x1} ${y1} ${x2} ${y2}${colorStr}`);
@@ -71,4 +75,8 @@ export class DebugPC implements vm.IVirtualPC {
     }
     putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) {
     }
+    screenLines(): number {
+        return 25;
+    }
+    setViewPrint(top: number, bottom: number) { }
 }

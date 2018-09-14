@@ -41,11 +41,14 @@ export interface IVirtualPC {
     circle(x: number, y: number, radius: number, color: number | undefined, start: number, end: number, aspect: number);
     paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined);
     pset(x: number, y: number, color?: number);
+    point(x: number, y: number): number;
     draw(currentX: number, currentY: number, instructions: DrawInstruction[]);
     getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined;
     putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string);
     locate(x?: number, y?: number);
     screen(id: number);
+    screenLines(): number;
+    setViewPrint(top: number, bottom: number);
     resetPalette();
     setPaletteAttribute(attr: number, color: number);
     sleep(delay: number, done);
@@ -229,6 +232,9 @@ export class NullPC implements IVirtualPC {
     pset(x: number, y: number, color?: number) {
         throw new Error("not implemented");
     }
+    point(x: number, y: number): number {
+        throw new Error("not implemented");
+    }
     locate(x?: number, y?: number) {
         throw new Error("not implemented");
     }
@@ -257,6 +263,12 @@ export class NullPC implements IVirtualPC {
         return undefined;
     }
     putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) { }
+    screenLines(): number {
+        throw new Error("not implemented");
+    }
+    setViewPrint(top: number, bottom: number) {
+        throw new Error("not implemented");
+    }
 }
 
 function convertNumber(n: number, baseType: BaseType): number | string {
@@ -293,6 +305,7 @@ export enum InstructionID {
     // For instructions that write to a stack value, the output is the first parameter.
     ADDRESS, // S S
     INPUT, // InputSpec
+    LINE_INPUT, // S S S
     INPUT_FUNC, // S S
     TO_INT, // S S
     TO_LONG, // S S
@@ -315,6 +328,7 @@ export enum InstructionID {
     NEG, // S S S
     MUL, // S S S
     DIV, // S S S
+    POW, // S S S
     IDIV, // S S S
     MOD, // S S S
     EQ, // S S S
@@ -350,6 +364,8 @@ export enum InstructionID {
     GET_GRAPHICS, // S S S S S
     PUT_GRAPHICS, // S S S ActionVerb
     PSET, // S S [ S ]
+    POINT, // S S S
+    CURRENT_POINT, // S S
     CLS, // <no parameters> (TODO)
     SCREEN, // S
     SLEEP, // S
@@ -381,6 +397,8 @@ export enum InstructionID {
     RESUME,
     RESUME_NEXT,
     RESUME_GOTO,
+    VIEW, // <screen-bool> S S S S S S
+    VIEW_PRINT, // S S
     NOP,
 }
 
@@ -389,7 +407,7 @@ export const ConstExprInstructions = new Set([
     InstructionID.TO_INT, InstructionID.TO_LONG, InstructionID.TO_SINGLE, InstructionID.TO_DOUBLE,
     InstructionID.ASSIGN, InstructionID.COPY,
     InstructionID.ADD, InstructionID.SUB, InstructionID.NEG, InstructionID.MUL,
-    InstructionID.DIV, InstructionID.IDIV, InstructionID.MOD, InstructionID.EQ,
+    InstructionID.DIV, InstructionID.POW, InstructionID.IDIV, InstructionID.MOD, InstructionID.EQ,
     InstructionID.NEQ, InstructionID.GTE, InstructionID.LTE, InstructionID.LT,
     InstructionID.GT, InstructionID.OR, InstructionID.AND, InstructionID.XOR,
     InstructionID.NOT, InstructionID.LOGICNOT, InstructionID.ABS, InstructionID.MID,
@@ -729,6 +747,10 @@ export class Instruction {
             case InstructionID.PUT_GRAPHICS: // S S S ActionVerb
                 if (offset < 3) return "S";
                 return "ActionVerb";
+            case InstructionID.VIEW:
+                if (offset === 0) return "screen";
+                return "S";
+            case InstructionID.VIEW_PRINT: // S S
             case InstructionID.COPY: // S S
             case InstructionID.CIRCLE: // S S S S S? S? S?
             case InstructionID.PAINT: // S S S S
@@ -744,6 +766,7 @@ export class Instruction {
             case InstructionID.NEG:  // S S S
             case InstructionID.MUL:  // S S S
             case InstructionID.DIV:  // S S S
+            case InstructionID.POW:  // S S S
             case InstructionID.IDIV:  // S S S
             case InstructionID.MOD:  // S S S
             case InstructionID.EQ:  // S S S
@@ -774,6 +797,8 @@ export class Instruction {
             case InstructionID.GET_DRAW_POS:  // S S
             case InstructionID.GET_GRAPHICS: // S S S S S
             case InstructionID.PSET:  // S S [ S ]
+            case InstructionID.POINT:  // S S S
+            case InstructionID.CURRENT_POINT: // S S
             case InstructionID.CLS:  // <no parameters> (TODO)
             case InstructionID.SCREEN:  // S
             case InstructionID.SLEEP:  // S
@@ -800,6 +825,7 @@ export class Instruction {
             case InstructionID.SPACE:  // S S
             case InstructionID.LOG:  // S
             case InstructionID.INPUT_FUNC: // S S
+            case InstructionID.LINE_INPUT: // S S S
             case InstructionID.NOP:
                 if (this.args[offset] !== undefined) {
                     return "S";
@@ -821,7 +847,7 @@ export class Instruction {
     }
     mapStackOffset(oldToNew: (s: number) => number) {
         for (let i = 0; i < this.args.length; i++) {
-            if (this.parameterType(i) === "S") {
+            if (this.parameterType(i) === "S" && this.args[i] !== undefined) {
                 this.args[i] = oldToNew(this.args[i]);
             }
         }
@@ -1193,6 +1219,12 @@ ${listing}
                 this.save(args[0], VariableValue.newDouble(a.anyval() / b.anyval()));
                 break;
             }
+            case InstructionID.POW: {
+                const a = this.read(args[1]);
+                const b = this.read(args[2]);
+                this.save(args[0], VariableValue.newDouble(Math.pow(a.anyval(), b.anyval())));
+                break;
+            }
             case InstructionID.IDIV: {
                 const a = this.read(args[1]);
                 const b = this.read(args[2]);
@@ -1332,6 +1364,22 @@ ${listing}
                     }
                     this.unpause();
                 };
+                this.vpc.input(inputReady);
+                break;
+            }
+            case InstructionID.LINE_INPUT: {
+                const sameLine = this.readValOrUndefined(args[0]);
+                const prompt = this.readValOrUndefined(args[1]);
+                const inputReady = (text: string) => {
+                    this.waiting = false;
+                    if (sameLine !== undefined && sameLine) {
+                    } else {
+                        this.vpc.print("\n");
+                    }
+                    this.save(args[2], VariableValue.newString(text));
+                    this.unpause();
+                };
+                if (prompt) this.vpc.print(prompt.strVal());
                 this.vpc.input(inputReady);
                 break;
             }
@@ -1612,6 +1660,20 @@ ${listing}
                 this.lastPointY = Math.round(y);
                 break;
             }
+            case InstructionID.POINT: {
+                this.save(args[0], VariableValue.newInt(
+                    this.vpc.point(Math.round(this.read(args[1]).numVal()), Math.round(this.read(args[2]).numVal()))));
+                break;
+            }
+            case InstructionID.CURRENT_POINT: {
+                switch (this.read(args[1]).numVal()) {
+                    case 0: this.save(args[0], VariableValue.newInt(this.lastPointX));
+                    case 1: this.save(args[1], VariableValue.newInt(this.lastPointX));
+                    case 2: case 3: this.raise("not implemented"); break;
+                    default: this.raise("invalid call");
+                }
+                break;
+            }
             case InstructionID.CLS: {
                 this.vpc.cls();
                 break;
@@ -1783,6 +1845,28 @@ ${listing}
                     this.frame.pc = args[0];
                     this.errorInstructionOffset = undefined;
                 }
+                break;
+            }
+            case InstructionID.VIEW: {
+                const screen = args[0] as boolean;
+                const x1 = this.read(args[1]);
+                const y1 = this.read(args[2]);
+                const x2 = this.read(args[3]);
+                const y2 = this.read(args[4]);
+                const borderColor = this.read(args[6]);
+                const border = this.read(args[7]);
+                this.raise("not implemented");
+                break;
+            }
+            case InstructionID.VIEW_PRINT: {
+                const maxValue = this.vpc.screenLines();
+                const top = this.read(args[0]).numVal();
+                const bottom = this.read(args[1]).numVal();
+                if (top < 1 || bottom < 1 || top > bottom || bottom > maxValue || top > maxValue) {
+                    this.raise("invalid call");
+                    break;
+                }
+                this.vpc.setViewPrint(top, bottom);
                 break;
             }
             case InstructionID.NOP: {

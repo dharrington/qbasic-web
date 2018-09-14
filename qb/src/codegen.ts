@@ -735,6 +735,13 @@ export class CodegenCtx implements ICtx {
                 this.write(vm.InstructionID.DIV, r, C[0], C[1]);
                 return r;
             }
+            case "^": {
+                const C = this.pushCompatibleOperands(O[0], O[1]);
+                if (!C) return undefined;
+                const r = this.newStackValue(kDoubleType);
+                this.write(vm.InstructionID.POW, r, C[0], C[1]);
+                return r;
+            }
             case "\\": {
                 const C = this.pushCompatibleOperands(O[0], O[1]);
                 if (!C) return undefined;
@@ -963,13 +970,13 @@ export class CodegenCtx implements ICtx {
         sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, callStackOffset));
     }
 
-    callBuiltin(id: string, args: Val[]): MVal {
-        const callWithReturn = (instId: vm.InstructionID, returnType: Type, args: Val[]) => {
+    callBuiltin(id: string, args: (MVal | boolean | number)[]): MVal {
+        const callWithReturn = (instId: vm.InstructionID, returnType: Type, args: (MVal | boolean | number)[]) => {
             const result = this.newStackValue(returnType);
             this.write(instId, result, ...args);
             return result;
         };
-        const callNoReturn = (instId: vm.InstructionID, args: Val[]) => {
+        const callNoReturn = (instId: vm.InstructionID, args: (MVal | boolean | number)[]) => {
             this.write(instId, ...args);
             return undefined;
         };
@@ -1007,6 +1014,12 @@ export class CodegenCtx implements ICtx {
             case "TIMER": return callWithReturn(vm.InstructionID.TIMER, kDoubleType, args);
             case "UCASE": return callWithReturn(vm.InstructionID.UCASE, kStringType, args);
             case "VAL": return callWithReturn(vm.InstructionID.VAL, kDoubleType, args);
+            case "LINE_INPUT": return callNoReturn(vm.InstructionID.LINE_INPUT, args);
+            case "POINT": return callWithReturn(vm.InstructionID.POINT, kIntType, args);
+            case "CURRENT_POINT": return callWithReturn(vm.InstructionID.CURRENT_POINT, kIntType, args);
+            case "VIEW": return callNoReturn(vm.InstructionID.VIEW, args);
+            case "VIEW_PRINT": return callNoReturn(vm.InstructionID.VIEW_PRINT, args);
+            case "BEEP": return undefined; // TODO
         }
         this.error("not implemented");
         return undefined;
@@ -1431,7 +1444,7 @@ export class CodegenCtx implements ICtx {
             x2 = b.x;
             y2 = b.y;
         }
-        const args: any[] = [x1, y1, x2, y2, null, null, null];
+        const args: any[] = [x1, y1, x2, y2, undefined, undefined, undefined];
         if (color) {
             args[4] = color;
         }
