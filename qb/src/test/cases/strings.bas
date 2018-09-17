@@ -1,7 +1,11 @@
 PRINT INSTR("HI MOM", "HI")
 PRINT INSTR("HI MOM", "MOM")
 PRINT INSTR(2, "HI MOM", "HI")
+PRINT STRING$(4, "X")
+PRINT STRING$(4, 120)
 REM output
  1 
  4 
  0 
+XXXX
+xxxx

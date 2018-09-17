@@ -70,13 +70,17 @@ export class DebugPC implements vm.IVirtualPC {
         callback("");
     }
     cls() { }
+    clsGraphics() { }
+    clsText() { }
     getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
         return undefined;
     }
-    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) {
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: vm.GraphicsAction) {
     }
     screenLines(): number {
         return 25;
     }
     setViewPrint(top: number, bottom: number) { }
+    setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
+    }
 }

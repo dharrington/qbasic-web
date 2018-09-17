@@ -25,6 +25,18 @@ const kLocalBit = 0x20000000;
 const kConstBit = 0x10000000;
 const kSpecialBits = kGlobalBit | kLocalBit | kConstBit;
 
+function parseGraphicsAction(action: string): vm.GraphicsAction | undefined {
+    switch (action) {
+        case "PSET": return vm.GraphicsAction.kPset;
+        case "PRESET": return vm.GraphicsAction.kPreset;
+        case "AND": return vm.GraphicsAction.kAnd;
+        case "OR": return vm.GraphicsAction.kOr;
+        case "XOR": return vm.GraphicsAction.kXor;
+    }
+    return undefined;
+}
+
+
 enum CtrlFlowType {
     kIF,
     kFOR,
@@ -241,23 +253,25 @@ export class CodegenCtx implements ICtx {
         }
     }
     defineType(id: Token, t: Type) {
-        if (this.g.types.has(id.text)) {
+        if (this.g.types.has(id.utext())) {
             this.error("duplicate definition", id.loc);
             return;
         }
         if (!t) return;
-        this.g.types.set(id.text, t);
+        this.g.types.set(id.utext(), t);
     }
     typename(tok: Token): Type | undefined {
-        if (tok.text === "INTEGER") { return kIntType; }
-        if (tok.text === "STRING") { return kStringType; }
-        if (tok.text === "DOUBLE") { return kDoubleType; }
-        if (tok.text === "SINGLE") { return kSingleType; }
-        if (tok.text === "LONG") { return kLongType; }
-        return this.g.types.get(tok.text);
+        switch (tok.utext()) {
+            case "INTEGER": return kIntType;
+            case "STRING": return kStringType;
+            case "DOUBLE": return kDoubleType;
+            case "SINGLE": return kSingleType;
+            case "LONG": return kLongType;
+        }
+        return this.g.types.get(tok.utext());
     }
     label(tok: Token) {
-        this.g.labels.set(tok.text, this.branchTargetHere());
+        this.g.labels.set(tok.text.toUpperCase(), this.branchTargetHere());
     }
     lineNumber(num: number, tok: Token) {
         if (this.g.lineNumbers.has(num)) {
@@ -317,6 +331,7 @@ export class CodegenCtx implements ICtx {
     }
 
     findVariable(name: string, sigil: BaseType): Val | undefined {
+        name = name.toUpperCase();
         // If a variable is defined by DIM or CONST, only a single variable can use that name.
         // Otherwise, an 'auto' variable of each basic type can be used with the same name (X%, X$, etc...)
         {
@@ -364,14 +379,13 @@ export class CodegenCtx implements ICtx {
         }
 
         if (defaultType === undefined) return undefined;
-        const key = name + baseTypeToSigil(sigil);
         const v = Val.newVar(name, defaultType);
         if (!this.parent) {
             v.stackOffset = kGlobalBit | this.g.globalVarCount++;
         } else {
             v.stackOffset = kLocalBit | this.localVarCount++;
         }
-        this.autoVars.set(key, v);
+        this.autoVars.set(name.toUpperCase() + baseTypeToSigil(sigil), v);
 
         // Write declaration instruction.
         const varVal = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
@@ -390,7 +404,7 @@ export class CodegenCtx implements ICtx {
             }
         }
         const v = Val.newConst(id.text, value.type, value.type === kStringType ? value.stringValue : value.numberValue);
-        this.constVars.set(id.text, v);
+        this.constVars.set(id.text.toUpperCase(), v);
     }
     index(v: Val, idx: Val[]): MVal {
         if (v.isVar()) {
@@ -433,13 +447,13 @@ export class CodegenCtx implements ICtx {
     dim(name: Token | string, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean) {
         const nameText = name instanceof Token ? name.text : name as string;
         const loc = name instanceof Token ? name.loc : undefined;
-        const existingDefinition = this.dimVars.get(nameText);
+        const existingDefinition = this.dimVars.get(nameText.toUpperCase());
         if (existingDefinition !== undefined && !dynamic) {
             this.error("duplicate definition", loc);
             return;
         }
         for (const suffix of ["$", "%", "&", "!", "#", ""]) {
-            if (this.autoVars.has(nameText + suffix)) {
+            if (this.autoVars.has(nameText.toUpperCase() + suffix)) {
                 this.error("duplicate definition", loc);
                 return;
             }
@@ -513,7 +527,7 @@ export class CodegenCtx implements ICtx {
             v.dimmed = true;
             if (dynamicSize || dynamic) v.dynamic = true;
             if (shared) v.shared = true;
-            this.dimVars.set(nameText, v);
+            this.dimVars.set(nameText.toUpperCase(), v);
         }
         if (!dynamic) {
             const vv = vm.VariableValue.single(v.type, vm.zeroValue(v.type));
@@ -586,11 +600,7 @@ export class CodegenCtx implements ICtx {
 
     op(name: string, O: Val[]): MVal {
         switch (name) {
-            // TODO: ^, EQV, IMP.
-            case "CLS": {
-                this.write(vm.InstructionID.CLS);
-                return undefined;
-            }
+            // TODO: EQV, IMP.
             case "=": { // equality
                 const C = this.pushCompatibleOperands(O[0], O[1]);
                 if (!C) return undefined;
@@ -598,14 +608,14 @@ export class CodegenCtx implements ICtx {
                 this.write(vm.InstructionID.EQ, r, C[0], C[1]);
                 return r;
             }
-            case ">=": {
+            case "=>": case ">=": {
                 const C = this.pushCompatibleOperands(O[0], O[1]);
                 if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
                 this.write(vm.InstructionID.GTE, r, C[0], C[1]);
                 return r;
             }
-            case "<=": {
+            case "=<": case "<=": {
                 const C = this.pushCompatibleOperands(O[0], O[1]);
                 if (!C) return undefined;
                 const r = this.newStackValue(kIntType);
@@ -780,7 +790,7 @@ export class CodegenCtx implements ICtx {
         const argTypes = args.map((a) => a.type);
         const fn = new FunctionInfo(new FunctionType(type, argTypes), false);
         fn.name = id.text;
-        this.g.functions.set(fn.name, fn);
+        this.g.functions.set(fn.name.toUpperCase(), fn);
     }
     // At the end of the program lies the END instruction. Below that point, only subroutine code is present.
     // Defining a subroutine will implicitly mark the end of the program.
@@ -792,10 +802,10 @@ export class CodegenCtx implements ICtx {
     }
     sub(id: Token, args: Val[]): ICtx {
         this.setEnd();
-        let sub = this.g.subs.get(id.text);
+        let sub = this.g.subs.get(id.utext());
         if (!sub) {
             this.declSub(id, args);
-            sub = this.g.subs.get(id.text) as SubroutineInfo;
+            sub = this.g.subs.get(id.utext()) as SubroutineInfo;
         } else if (sub.blockInfo.startPc >= 0) {
             this.error("duplicate subroutine name", id.loc);
             return this;
@@ -817,7 +827,7 @@ export class CodegenCtx implements ICtx {
             if (a.isArrayArg) argVal.isArrayArg = true;
             if (a.dimmed) {
                 argVal.dimmed = true;
-                subCtx.dimVars.set(argVal.varName, argVal);
+                subCtx.dimVars.set(argVal.varName.toUpperCase(), argVal);
             } else {
                 subCtx.autoVars.set(this.autoVarKey(argVal), argVal);
             }
@@ -845,10 +855,10 @@ export class CodegenCtx implements ICtx {
         if (!singleLine) {
             this.setEnd();
         }
-        let fn = this.g.functions.get(id.text);
+        let fn = this.g.functions.get(id.text.toUpperCase());
         if (!fn) {
             this.declFunction(id, sigil, returnType, args);
-            fn = this.g.functions.get(id.text) as FunctionInfo;
+            fn = this.g.functions.get(id.text.toUpperCase()) as FunctionInfo;
         } else if (fn.blockInfo.startPc >= 0) {
             this.error("function already defined");
             return this;
@@ -869,7 +879,7 @@ export class CodegenCtx implements ICtx {
         retVal.stackOffset = 0;
         // fnCtx.stackOffset = this.stackOffset;
         fnCtx.blockInfo.declareInstructions.push(new vm.Instruction(vm.InstructionID.DECLARE, [retVal.stackOffset, vm.VariableValue.single(retVal.type, vm.zeroValue(retVal.type))]));
-        fnCtx.dimVars.set(retVal.varName, retVal);
+        fnCtx.dimVars.set(retVal.varName.toUpperCase(), retVal);
         // fnCtx.dim(id, undefined, returnType, false);
         // const retVal = fnCtx.dimVars.get(id.text);
         // fnCtx.dimVars.set(retVal.varName, retVal);
@@ -884,7 +894,7 @@ export class CodegenCtx implements ICtx {
             if (a.isArrayArg) argVal.isArrayArg = true;
             if (a.dimmed) {
                 argVal.dimmed = true;
-                fnCtx.dimVars.set(argVal.varName, argVal);
+                fnCtx.dimVars.set(argVal.varName.toUpperCase(), argVal);
             } else {
                 fnCtx.autoVars.set(this.autoVarKey(argVal), argVal);
             }
@@ -934,18 +944,18 @@ export class CodegenCtx implements ICtx {
         return this.g.subs.has(id);
     }
     isConst(id: string): boolean {
-        return (this.parent && this.parent.isConst(id)) || this.constVars.has(id);
+        return (this.parent && this.parent.isConst(id)) || this.constVars.has(id.toUpperCase());
     }
     isFunction(id: string): boolean {
-        return this.g.functions.has(id);
+        return this.g.functions.has(id.toUpperCase());
     }
     lookupFunction(id: string): FunctionType | undefined {
-        const f = this.g.functions.get(id);
+        const f = this.g.functions.get(id.toUpperCase());
         if (!f) return undefined;
         return f.type;
     }
     callSub(id: Token, args: Val[]) {
-        const sub = this.g.subs.get(id.text);
+        const sub = this.g.subs.get(id.utext());
         if (!sub) {
             this.error("not a subroutine");
             return;
@@ -970,23 +980,24 @@ export class CodegenCtx implements ICtx {
         sub.calls.push(this.emit(vm.InstructionID.CALL_SUB, 0/*pc*/, callStackOffset));
     }
 
-    callBuiltin(id: string, args: (MVal | boolean | number)[]): MVal {
-        const callWithReturn = (instId: vm.InstructionID, returnType: Type, args: (MVal | boolean | number)[]) => {
+    callBuiltin(id: string, args: Array<MVal | boolean | number>): MVal {
+        const callWithReturn = (instId: vm.InstructionID, returnType: Type, callArgs: Array<MVal | boolean | number>) => {
             const result = this.newStackValue(returnType);
-            this.write(instId, result, ...args);
+            this.write(instId, result, ...callArgs);
             return result;
         };
-        const callNoReturn = (instId: vm.InstructionID, args: (MVal | boolean | number)[]) => {
-            this.write(instId, ...args);
+        const callNoReturn = (instId: vm.InstructionID, callArgs: Array<MVal | boolean | number>) => {
+            this.write(instId, ...callArgs);
             return undefined;
         };
         switch (id) {
-            case "__LOG": return callNoReturn(vm.InstructionID.LOG, args);
+            case "__LOG": return callNoReturn(vm.InstructionID.DEBUGLOG, args);
             case "ASC": return callWithReturn(vm.InstructionID.ASC, kIntType, args);
             case "ATN": return callWithReturn(vm.InstructionID.ATN, kDoubleType, args);
             case "CDBL": return callWithReturn(vm.InstructionID.CDBL, kDoubleType, args);
             case "CHR": return callWithReturn(vm.InstructionID.CHR, kStringType, args);
             case "CINT": return callWithReturn(vm.InstructionID.CINT, kIntType, args);
+            case "CLS": return callNoReturn(vm.InstructionID.CLS, args);
             case "CLNG": return callWithReturn(vm.InstructionID.CLNG, kLongType, args);
             case "COS": return callWithReturn(vm.InstructionID.COS, kDoubleType, args);
             case "CSNG": return callWithReturn(vm.InstructionID.CSNG, kSingleType, args);
@@ -1003,11 +1014,12 @@ export class CodegenCtx implements ICtx {
             case "LEN": return callWithReturn(vm.InstructionID.LEN, kLongType, args);
             case "LTRIM": return callWithReturn(vm.InstructionID.LTRIM, kStringType, args);
             case "MID": return callWithReturn(vm.InstructionID.MID, kStringType, args);
-            case "PEEK": return callWithReturn(vm.InstructionID.NOP, kIntType, args);
+            case "PEEK": return callWithReturn(vm.InstructionID.PEEK, kIntType, args);
             case "RIGHT": return callWithReturn(vm.InstructionID.RIGHT, kStringType, args);
             case "RND": return callWithReturn(vm.InstructionID.RND, kSingleType, args);
             case "RTRIM": return callWithReturn(vm.InstructionID.RTRIM, kStringType, args);
             case "SIN": return callWithReturn(vm.InstructionID.SIN, kDoubleType, args);
+            case "LOG": return callWithReturn(vm.InstructionID.LOG, kDoubleType, args);
             case "SPACE": return callWithReturn(vm.InstructionID.SPACE, kStringType, args);
             case "STR": return callWithReturn(vm.InstructionID.STR, kStringType, args);
             case "TAN": return callWithReturn(vm.InstructionID.TAN, kDoubleType, args);
@@ -1019,13 +1031,17 @@ export class CodegenCtx implements ICtx {
             case "CURRENT_POINT": return callWithReturn(vm.InstructionID.CURRENT_POINT, kIntType, args);
             case "VIEW": return callNoReturn(vm.InstructionID.VIEW, args);
             case "VIEW_PRINT": return callNoReturn(vm.InstructionID.VIEW_PRINT, args);
+            case "SCREEN": return callNoReturn(vm.InstructionID.SCREEN, args);
+            case "STRING": return callWithReturn(vm.InstructionID.STRING, kStringType, args);
+            case "SLEEP": return callNoReturn(vm.InstructionID.SLEEP, args);
+            case "SOUND": return undefined; // TODO
             case "BEEP": return undefined; // TODO
         }
         this.error("not implemented");
         return undefined;
     }
     callFunction(id: string, args: Val[]): MVal {
-        const f = this.g.functions.get(id);
+        const f = this.g.functions.get(id.toUpperCase());
         if (!f) return undefined;
         if (f.builtin && f.builtinOp) {
             const r = this.newStackValue(f.type.resultType);
@@ -1345,10 +1361,6 @@ export class CodegenCtx implements ICtx {
         }
         this.write(vm.InstructionID.PALETTE, attr, col);
     }
-    sleep(delay?: Val) {
-        if (delay) this.write(vm.InstructionID.SLEEP, delay);
-        else this.write(vm.InstructionID.SLEEP);
-    }
     pset(a: Coord, color?: Val) {
         if (!a) return;
         let x1: Val;
@@ -1493,8 +1505,10 @@ export class CodegenCtx implements ICtx {
         this.write(vm.InstructionID.GET_GRAPHICS, x1, y1, x2, y2, variable);
     }
     putGraphics(a: Coord, id: Token, sig: BaseType, verb: string) {
-        if (verb !== "PSET") {
-            this.error("not implemented");
+        let action = parseGraphicsAction(verb);
+        if (action === undefined) {
+            this.error("internal error");
+            return;
         }
         let x1: Val;
         let y1: Val;
@@ -1515,14 +1529,7 @@ export class CodegenCtx implements ICtx {
             this.error("undefined variable", id.loc);
             return;
         }
-        this.write(vm.InstructionID.PUT_GRAPHICS, x1, y1, variable);
-    }
-    screen(id: Val) {
-        if (!id || !id.type.isNumeric()) {
-            this.error("expected number");
-            return;
-        }
-        this.write(vm.InstructionID.SCREEN, id);
+        this.write(vm.InstructionID.PUT_GRAPHICS, x1, y1, variable, action);
     }
     randomize(seed: Val) {
         this.write(vm.InstructionID.RANDOMIZE, seed);
@@ -1581,7 +1588,7 @@ export class CodegenCtx implements ICtx {
         for (const r of this.g.restores) {
             let target: BranchTarget | undefined;
             if (typeof (r.lbl) === "string") {
-                target = this.g.labels.get(r.lbl);
+                target = this.g.labels.get(r.lbl.toUpperCase());
                 if (target === undefined) {
                     this.error("label not found");
                     continue;
@@ -1616,7 +1623,7 @@ export class CodegenCtx implements ICtx {
         for (const g of this.g.gotos) {
             let target: BranchTarget | undefined;
             if (g.label) {
-                target = this.g.labels.get(g.label);
+                target = this.g.labels.get(g.label.toUpperCase());
                 if (target === undefined) {
                     this.error("label not found", g.token);
                     continue;
@@ -1653,8 +1660,8 @@ export class CodegenCtx implements ICtx {
             for (const offset of b.statementOffsets) {
                 prog.statementOffsets.push(offset);
             }
-            for (const instToLine of b.instToLine) {
-                prog.instToLine.set(instToLine[0], instToLine[1]);
+            for (const [instOffset, line] of b.instToLine) {
+                prog.instToLine.set(instOffset + b.startPc, line);
             }
         }
         this.finalized = true;
@@ -1715,7 +1722,7 @@ export class CodegenCtx implements ICtx {
         return this.stackOffset++;
     }
     private autoVarKey(v: Val): string {
-        return v.baseType() === BaseType.kSingle ? v.varName : v.varName + baseTypeToSigil(v.baseType());
+        return v.baseType() === BaseType.kSingle ? v.varName.toUpperCase() : v.varName.toUpperCase() + baseTypeToSigil(v.baseType());
     }
     private varAddr(v: Val): string {
         if (v.isVar()) {

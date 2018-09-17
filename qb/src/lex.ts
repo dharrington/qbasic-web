@@ -67,6 +67,7 @@ export class Token {
     stringVal(): string {
         return this.text.substr(1, this.text.length - 2);
     }
+    utext() { return this.text.toUpperCase(); }
 }
 
 function eatSpace(s: LexState) {
@@ -111,8 +112,8 @@ export function lex(text: string): Token[] {
                 matchToken(TokenType.kNumber,
                     /^(([0-9]+([.][0-9]*([ED][+-]?[0-9]+)?)?)|(\.[0-9]+([ED][+-]?[0-9]+)?))/, s)
                 || matchToken(TokenType.kNumber, /^&H[0-9A-F]+/, s)
-                || matchToken(TokenType.kOp, /^(\=?(\=?>=?)|(\=?<[>=]?)|[()[!\]:;&%$=,.#+*/\\?-])/, s)
-                || matchToken(TokenType.kString, /^"([^"\\]|\\.)*"/, s);
+                || matchToken(TokenType.kOp, /^(\=?(\=?=>|=<)|(\=?>=?)|(\=?<[>=]?)|[()[!\]:;&%$=,.#+*/\\?-])/, s)
+                || matchToken(TokenType.kString, /^"([^"\\]|\\.)*("|$)/, s);
             if (tok) {
                 tokens.push(tok);
             } else {

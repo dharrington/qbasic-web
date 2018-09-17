@@ -29,6 +29,9 @@ export enum LineType {
     kBox,
     kFilledBox,
 }
+export enum GraphicsAction {
+    kPset, kPreset, kAnd, kOr, kXor,
+}
 
 // The virtual computer on which the VM executes.
 export interface IVirtualPC {
@@ -44,16 +47,19 @@ export interface IVirtualPC {
     point(x: number, y: number): number;
     draw(currentX: number, currentY: number, instructions: DrawInstruction[]);
     getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined;
-    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string);
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: GraphicsAction);
     locate(x?: number, y?: number);
-    screen(id: number);
+    screen(id: number | undefined, colorswitch: number | undefined, apage: number | undefined, vpage: number | undefined);
     screenLines(): number;
     setViewPrint(top: number, bottom: number);
+    setView(x1: number, y1: number, x2: number, y2: number, relative: boolean);
     resetPalette();
     setPaletteAttribute(attr: number, color: number);
     sleep(delay: number, done);
     inkey(): string;
     cls();
+    clsGraphics();
+    clsText();
 }
 
 export enum DrawInstructionID {
@@ -238,7 +244,7 @@ export class NullPC implements IVirtualPC {
     locate(x?: number, y?: number) {
         throw new Error("not implemented");
     }
-    screen(id: number) {
+    screen() {
         throw new Error("not implemented");
     }
     resetPalette() {
@@ -259,16 +265,20 @@ export class NullPC implements IVirtualPC {
     cls() {
         throw new Error("not implemented");
     }
+    clsGraphics() { throw new Error("not implemented"); }
+    clsText() { throw new Error("not implemented"); }
     getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
         return undefined;
     }
-    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: string) { }
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: GraphicsAction) { }
     screenLines(): number {
         throw new Error("not implemented");
     }
     setViewPrint(top: number, bottom: number) {
         throw new Error("not implemented");
     }
+    setView() { throw new Error("not implemented"); }
+
 }
 
 function convertNumber(n: number, baseType: BaseType): number | string {
@@ -346,6 +356,7 @@ export enum InstructionID {
     LOCATE, // S|undefined [ S|undefined ]
     ABS, // S S
     MID, // S S S [ S ]
+    PEEK, // S S
     RIGHT, // S S S
     LEFT, // S S S
     CHR, // S S
@@ -366,7 +377,7 @@ export enum InstructionID {
     PSET, // S S [ S ]
     POINT, // S S S
     CURRENT_POINT, // S S
-    CLS, // <no parameters> (TODO)
+    CLS, // S
     SCREEN, // S
     SLEEP, // S
     INKEY, // S
@@ -374,6 +385,7 @@ export enum InstructionID {
     STR, // S S
     TAN, // S S
     SIN, // S S
+    LOG, // S S
     COS, // S S
     ATN, // S S
     CINT, // S S
@@ -392,13 +404,14 @@ export enum InstructionID {
     UCASE, // S S
     INSTR, // S S S
     SPACE, // S S
-    LOG, // S
+    DEBUGLOG, // S
     ON_ERROR_GOTO, // PC
     RESUME,
     RESUME_NEXT,
     RESUME_GOTO,
     VIEW, // <screen-bool> S S S S S S
     VIEW_PRINT, // S S
+    STRING, // S S
     NOP,
 }
 
@@ -413,7 +426,7 @@ export const ConstExprInstructions = new Set([
     InstructionID.NOT, InstructionID.LOGICNOT, InstructionID.ABS, InstructionID.MID,
     InstructionID.RIGHT, InstructionID.LEFT, InstructionID.CHR, InstructionID.ASC,
     InstructionID.INT, InstructionID.FIX, InstructionID.STR, InstructionID.TAN,
-    InstructionID.SIN, InstructionID.COS, InstructionID.ATN, InstructionID.CINT,
+    InstructionID.SIN, InstructionID.LOG, InstructionID.COS, InstructionID.ATN, InstructionID.CINT,
     InstructionID.CLNG, InstructionID.CDBL, InstructionID.CSNG, InstructionID.EXP,
 ]);
 
@@ -680,6 +693,11 @@ export class VariableValue {
     }
 }
 
+function roundOrUndefined(v: VariableValue | undefined) {
+    if (v === undefined) return undefined;
+    return Math.round(v.numVal());
+}
+
 // Instructions are comprised of an InstructionID and an array of arguments whose type is determined by the
 // InstructionID.
 export class Instruction {
@@ -751,6 +769,7 @@ export class Instruction {
                 if (offset === 0) return "screen";
                 return "S";
             case InstructionID.VIEW_PRINT: // S S
+            case InstructionID.STRING: // S S
             case InstructionID.COPY: // S S
             case InstructionID.CIRCLE: // S S S S S? S? S?
             case InstructionID.PAINT: // S S S S
@@ -784,6 +803,7 @@ export class Instruction {
             case InstructionID.LOCATE:  // S|undefined [ S|undefined ]
             case InstructionID.ABS:  // S S
             case InstructionID.MID:  // S S S [ S ]
+            case InstructionID.PEEK: // S S
             case InstructionID.RIGHT:  // S S S
             case InstructionID.LEFT:  // S S S
             case InstructionID.CHR:  // S S
@@ -799,14 +819,15 @@ export class Instruction {
             case InstructionID.PSET:  // S S [ S ]
             case InstructionID.POINT:  // S S S
             case InstructionID.CURRENT_POINT: // S S
-            case InstructionID.CLS:  // <no parameters> (TODO)
-            case InstructionID.SCREEN:  // S
+            case InstructionID.CLS:  // S
+            case InstructionID.SCREEN:  // S S S S
             case InstructionID.SLEEP:  // S
             case InstructionID.INKEY:  // S
             case InstructionID.VAL:  // S S
             case InstructionID.STR:  // S S
             case InstructionID.TAN:  // S S
             case InstructionID.SIN:  // S S
+            case InstructionID.LOG:  // S S
             case InstructionID.COS:  // S S
             case InstructionID.ATN:  // S S
             case InstructionID.CINT:  // S S
@@ -823,7 +844,7 @@ export class Instruction {
             case InstructionID.UCASE:  // S S
             case InstructionID.INSTR:  // S S S
             case InstructionID.SPACE:  // S S
-            case InstructionID.LOG:  // S
+            case InstructionID.DEBUGLOG:  // S
             case InstructionID.INPUT_FUNC: // S S
             case InstructionID.LINE_INPUT: // S S S
             case InstructionID.NOP:
@@ -904,12 +925,14 @@ export class Program {
         return "" + arg;
     }
     sourceListingWithByteCode(source?: string, instAnnotations?: Map<number, string>): string {
-        const lineToInst = new Map<number, Array<number>>();
+        const lineToInst = new Map<number, number[]>();
         let previousLine = 0;
         for (let i = 0; i < this.inst.length; i++) {
             let line: number | undefined = this.instToLine.get(i);
             if (line === undefined) {
                 line = previousLine;
+            } else {
+                previousLine = line;
             }
             const current = lineToInst.get(line + 1);
             if (current) {
@@ -920,7 +943,7 @@ export class Program {
         }
         const sourceLines = (source || "").split("\n");
         const output: string[] = [];
-        let instOffset = 0;
+        const instOffset = 0;
         const addInstRange = (min, max) => {
             for (let instOffset = min; instOffset <= max; instOffset++) {
                 const annotation = instAnnotations && instAnnotations.get(instOffset) || "";
@@ -963,6 +986,11 @@ export function toInt(v: number): number {
     v = Math.round(v) % 65536;
     if (v > 32767) v = -65536 + v;
     return v;
+}
+
+export function intToUnsigned(v: number): number {
+    if (v >= 0) return v;
+    return v + 65536;
 }
 
 export function toLong(v: number): number {
@@ -1167,7 +1195,7 @@ ${listing}
                 break;
             }
             case InstructionID.DECLARE_REDIM: {
-                let dims: number[] = [];
+                const dims: number[] = [];
                 for (let i = 2; i < args.length; i++) {
                     dims.push(this.read(args[i]).numVal());
                 }
@@ -1445,6 +1473,10 @@ ${listing}
                 this.save(args[0], val);
                 break;
             }
+            case InstructionID.PEEK: { // TODO
+                this.save(args[0], VariableValue.newInt(0));
+                break;
+            }
             case InstructionID.LEFT: {
                 const val = this.read(args[1]).copySingle();
                 const n = Math.abs(this.read(args[2]).anyval());
@@ -1622,7 +1654,7 @@ ${listing}
                 const x = this.read(args[0]).numVal();
                 const y = this.read(args[1]).numVal();
                 const arrayVar = this.read(args[2]);
-                const actionVerb = args[3];
+                const actionVerb = args[3] as GraphicsAction;
                 const dims = arrayVar.dims;
                 if (!dims) {
                     this.raise("invalid array");
@@ -1638,10 +1670,10 @@ ${listing}
                 }
                 const data = new Uint8Array(dims[0] * 2);
                 for (let i = 0; i < data.length; i += 2) {
-                    const n = (arrayVar as any).arrayVals[Math.trunc(i / 2)] as number;
+                    const n = intToUnsigned((arrayVar as any).arrayVals[Math.trunc(i / 2)] as number);
                     data[i] = n % 256;
                     if (i + 1 < data.length) {
-                        data[i + 1] = (n / 256) % 256;
+                        data[i + 1] = (n >> 8) % 256;
                     }
                 }
                 this.vpc.putGraphics(Math.round(x), Math.round(y), data, actionVerb);
@@ -1667,20 +1699,35 @@ ${listing}
             }
             case InstructionID.CURRENT_POINT: {
                 switch (this.read(args[1]).numVal()) {
-                    case 0: this.save(args[0], VariableValue.newInt(this.lastPointX));
-                    case 1: this.save(args[1], VariableValue.newInt(this.lastPointX));
+                    case 0: this.save(args[0], VariableValue.newInt(this.lastPointX)); break;
+                    case 1: this.save(args[0], VariableValue.newInt(this.lastPointX)); break;
                     case 2: case 3: this.raise("not implemented"); break;
                     default: this.raise("invalid call");
                 }
                 break;
             }
             case InstructionID.CLS: {
-                this.vpc.cls();
+                const arg = this.readValOrUndefined(args[0]);
+                if (arg && arg.numVal() === 1) {
+                    this.vpc.clsGraphics();
+                } else if (arg && arg.numVal() === 2) {
+                    this.vpc.clsText();
+                } else {
+                    this.vpc.cls();
+                }
                 break;
             }
             case InstructionID.SCREEN: {
-                const id = this.read(args[0]).numVal();
-                this.vpc.screen(Math.round(id));
+                const apage = roundOrUndefined(this.readValOrUndefined(args[2]));
+                let vpage = roundOrUndefined(this.readValOrUndefined(args[3]));
+                if (vpage === undefined && apage !== undefined) {
+                    vpage = apage;
+                }
+                this.vpc.screen(
+                    roundOrUndefined(this.readValOrUndefined(args[0])),
+                    roundOrUndefined(this.readValOrUndefined(args[1])),
+                    apage, vpage,
+                );
                 break;
             }
             case InstructionID.SLEEP: {
@@ -1701,7 +1748,15 @@ ${listing}
                 break;
             }
             case InstructionID.STR: {
-                this.save(args[0], VariableValue.single(kStringType, "" + this.read(args[1]).val));
+                const val = this.read(args[1]).val;
+                let valStr;
+                if (typeof (val) === "number") {
+                    if (val >= 0) valStr = " " + val;
+                    else valStr = "" + val;
+                } else {
+                    valStr = "" + val;
+                }
+                this.save(args[0], VariableValue.single(kStringType, "" + valStr));
                 break;
             }
             case InstructionID.TAN: {
@@ -1714,6 +1769,15 @@ ${listing}
             }
             case InstructionID.COS: {
                 this.save(args[0], VariableValue.newDouble(Math.cos(this.read(args[1]).numVal())));
+                break;
+            }
+            case InstructionID.LOG: {
+                const param = this.read(args[1]).numVal();
+                if (param <= 0) {
+                    this.raise("Illegal function call");
+                    break;
+                }
+                this.save(args[0], VariableValue.newDouble(Math.log(param)));
                 break;
             }
             case InstructionID.ATN: {
@@ -1849,13 +1913,19 @@ ${listing}
             }
             case InstructionID.VIEW: {
                 const screen = args[0] as boolean;
-                const x1 = this.read(args[1]);
-                const y1 = this.read(args[2]);
-                const x2 = this.read(args[3]);
-                const y2 = this.read(args[4]);
-                const borderColor = this.read(args[6]);
-                const border = this.read(args[7]);
-                this.raise("not implemented");
+                const x1 = this.read(args[1]).numVal();
+                const y1 = this.read(args[2]).numVal();
+                const x2 = this.read(args[3]).numVal();
+                const y2 = this.read(args[4]).numVal();
+                const fillColor = this.readValOrUndefined(args[6]);
+                const borderColor = this.readValOrUndefined(args[7]);
+                if (borderColor !== undefined) {
+                    this.vpc.line(x1 - 1, y1 - 1, x2 + 1, y2 + 1, borderColor.numVal(), LineType.kBox, 0xffff);
+                }
+                if (fillColor !== undefined) {
+                    this.vpc.line(x1, y1, x2, y2, fillColor.numVal(), LineType.kFilledBox, 0xffff);
+                }
+                this.vpc.setView(x1, y1, x2, y2, screen);
                 break;
             }
             case InstructionID.VIEW_PRINT: {
@@ -1869,10 +1939,16 @@ ${listing}
                 this.vpc.setViewPrint(top, bottom);
                 break;
             }
+            case InstructionID.STRING: {
+                const times = this.read(args[1]).numVal();
+                const toRepeat = this.read(args[2]).strVal();
+                this.save(args[0], VariableValue.newString(toRepeat.substr(0, 1).repeat(times)));
+                break;
+            }
             case InstructionID.NOP: {
                 break;
             }
-            case InstructionID.LOG: {
+            case InstructionID.DEBUGLOG: {
                 console.log(this.read(args[0]).strVal());
                 break;
             }

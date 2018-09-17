@@ -22,7 +22,7 @@ NEXT I
 QSORT ARR(), 0, 10
 
 FOR I = 0 TO 9
-  PRINT STR(ARR(I));
+  PRINT STR$(ARR(I));
 NEXT I
 
 SUB PARTITION(V%(), s%, e%, m%)
@@ -62,3 +62,4 @@ SUB QSORT(V%(), s%, e%)
 END SUB
 
 REM output
+ 0 1 1 2 3 5 6 7 8 9
