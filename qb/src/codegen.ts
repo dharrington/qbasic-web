@@ -784,7 +784,7 @@ export class CodegenCtx implements ICtx {
     }
 
     declSub(id: Token, args: Val[]) {
-        this.g.subs.set(id.text, new SubroutineInfo(id.text, args));
+        this.g.subs.set(id.utext(), new SubroutineInfo(id.text, args));
     }
     declFunction(id: Token, sigil: BaseType, type: Type, args: Val[]) {
         const argTypes = args.map((a) => a.type);
@@ -1383,6 +1383,26 @@ export class CodegenCtx implements ICtx {
             args[2] = color;
         }
         this.write(vm.InstructionID.PSET, ...args);
+    }
+    preset(a: Coord) {
+        if (!a) return;
+        let x1: Val;
+        let y1: Val;
+        if (a.step) {
+            const oldx = this.newStackValue(kIntType);
+            const oldy = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.GET_DRAW_POS, oldx, oldy);
+            x1 = this.newStackValue(kIntType);
+            y1 = this.newStackValue(kIntType);
+            this.write(vm.InstructionID.ADD, x1, oldx, a.x);
+            this.write(vm.InstructionID.ADD, y1, oldy, a.y);
+        } else {
+            x1 = a.x;
+            y1 = a.y;
+        }
+
+        const args: any[] = [x1, y1];
+        this.write(vm.InstructionID.PRESET, ...args);
     }
     circle(center: Coord, radius: Val, color?: Val, start?: Val, end?: Val, aspect?: Val) {
         let x: Val;

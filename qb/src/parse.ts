@@ -241,6 +241,7 @@ export interface ICtx {
     getGraphics(a: Coord, b: Coord, id: Token, sig: BaseType): void;
     putGraphics(a: Coord, id: Token, sig: BaseType, verb: string): void;
     pset(a: Coord, color: MVal): void;
+    preset(a: Coord): void;
     locate(x?: Val, y?: Val): void; // TODO: more parameters
     palette(attr?: Val, col?: Val): void;
     endStmt(): void;
@@ -528,9 +529,9 @@ class Parser implements ILocator {
             case "LTRIM$": return this.callBuiltinWithTypes("LTRIM", kStringType, [kStringType]);
             case "MID$": return this.callBuiltinWithTypes("MID", kStringType, [kStringType, kLongType, kLongType], 1);
             case "PEEK": return this.callBuiltinWithTypes("PEEK", kIntType, [kIntType]);
-            case "RIGHT%": return this.callBuiltinWithTypes("RIGHT", kStringType, [kStringType, kLongType]);
+            case "RIGHT$": return this.callBuiltinWithTypes("RIGHT", kStringType, [kStringType, kLongType]);
             case "RND": return this.callBuiltinWithTypes("RND", kSingleType, [kIntType], 0);
-            case "RTRIM%": return this.callBuiltinWithTypes("RTRIM", kStringType, [kStringType]);
+            case "RTRIM$": return this.callBuiltinWithTypes("RTRIM", kStringType, [kStringType]);
             case "SIN": return this.callBuiltinWithTypes("SIN", kDoubleType, [kDoubleType]);
             case "LOG": return this.callBuiltinWithTypes("LOG", kDoubleType, [kDoubleType]);
             case "SPACE$": return this.callBuiltinWithTypes("SPACE", kStringType, [kIntType]);
@@ -1749,7 +1750,8 @@ class Parser implements ILocator {
         if (x && y) return new Coord(step, x, y);
     }
     psetStmt() {
-        this.next(); // PSET or PRESET
+        const isPreset = this.nextIf("PRESET");
+        if (!isPreset) this.expectIdent("PSET");
         const a = this.coord();
         if (!a) return;
         let color: MVal;
@@ -1758,6 +1760,10 @@ class Parser implements ILocator {
             if (!this.tok().isOp(",")) {
                 color = this.numericExpr();
             }
+        }
+        if (isPreset && color === undefined) {
+            this.ctx.preset(a);
+            return;
         }
         this.ctx.pset(a, color);
     }
@@ -1788,6 +1794,10 @@ class Parser implements ILocator {
         const duration = this.numericExpr();
         if (!duration) return;
         this.ctx.callBuiltin("SOUND", [freq, duration]);
+    }
+    chdirStmt() {
+        this.expectIdent("CHDIR"); // TODO someday?
+        this.stringExpr();
     }
     viewStmt() {
         this.expectIdent("VIEW");
@@ -2210,7 +2220,9 @@ class Parser implements ILocator {
                 case "VIEW": this.viewStmt(); break;
                 case "CHAIN": this.chainStmt(); break;
                 case "SOUND": this.soundStmt(); break;
+                case "CHDIR": this.chdirStmt(); break;
                 // TODO:
+                case "OUT":
                 case "KEY": case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "POKE": this.eatUntilNewline(); break;
                 case "DEF": this.expectIdent("DEF"); this.expectIdent("SEG"); this.eatUntilNewline(); break;
                 default: handled = false;

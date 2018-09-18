@@ -31,6 +31,8 @@ export class DebugPC implements vm.IVirtualPC {
     }
     setForeColor(fc: number) { }
     setBackColor(bc: number) { }
+    foreColor() { return 0; }
+    backColor() { return 0; }
     pset(x: number, y: number, color?: number) {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`PSET ${x} ${y}${colorStr}`);

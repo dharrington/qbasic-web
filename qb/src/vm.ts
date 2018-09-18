@@ -39,7 +39,9 @@ export interface IVirtualPC {
     input(completed: (text: string) => void);
     inkeyWait(n: number, callback: (result: string) => void);
     setForeColor(fc: number);
+    foreColor(): number;
     setBackColor(bc: number);
+    backColor(): number;
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number);
     circle(x: number, y: number, radius: number, color: number | undefined, start: number, end: number, aspect: number);
     paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined);
@@ -220,9 +222,11 @@ export class NullPC implements IVirtualPC {
     setForeColor(fc: number) {
         throw new Error("not implemented");
     }
+    foreColor() { throw new Error("not implemented"); return 0; }
     setBackColor(bc: number) {
         throw new Error("not implemented");
     }
+    backColor() { throw new Error("not implemented"); return 0; }
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number) {
         throw new Error("not implemented");
     }
@@ -375,6 +379,7 @@ export enum InstructionID {
     GET_GRAPHICS, // S S S S S
     PUT_GRAPHICS, // S S S ActionVerb
     PSET, // S S [ S ]
+    PRESET, // S S
     POINT, // S S S
     CURRENT_POINT, // S S
     CLS, // S
@@ -817,6 +822,7 @@ export class Instruction {
             case InstructionID.GET_DRAW_POS:  // S S
             case InstructionID.GET_GRAPHICS: // S S S S S
             case InstructionID.PSET:  // S S [ S ]
+            case InstructionID.PRESET:  // S S
             case InstructionID.POINT:  // S S S
             case InstructionID.CURRENT_POINT: // S S
             case InstructionID.CLS:  // S
@@ -1688,6 +1694,14 @@ ${listing}
                     color = Math.round(color as number);
                 }
                 this.vpc.pset(Math.round(x), Math.round(y), color);
+                this.lastPointX = Math.round(x);
+                this.lastPointY = Math.round(y);
+                break;
+            }
+            case InstructionID.PRESET: {
+                const x = this.read(args[0]).numVal();
+                const y = this.read(args[1]).numVal();
+                this.vpc.pset(Math.round(x), Math.round(y), this.vpc.backColor());
                 this.lastPointX = Math.round(x);
                 this.lastPointY = Math.round(y);
                 break;
