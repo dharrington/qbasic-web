@@ -426,15 +426,12 @@ class Parser implements ILocator {
                 return;
             }
             const id = this.expectIdent();
-            if (id) {
-                if (this.expectIdent("AS")) {
-                    const ty = this.typename();
-                    if (ty) {
-                        userType.fields.push(new UserTypeField(id.text, ty));
-                    }
-                    this.expectNewline();
-                }
-            }
+            if (!id) return;
+            if (!this.expectIdent("AS")) return;
+            const ty = this.typename();
+            if (!ty) return;
+            userType.fields.push(new UserTypeField(id.text, ty));
+            this.expectNewline();
         }
     }
 

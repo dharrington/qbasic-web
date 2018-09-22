@@ -1,6 +1,6 @@
 import * as vm from "../../qb/src/vm";
 import * as chars from "./chars";
-import { Buffer, Charmap, ScreenDraw } from "./screen";
+import { Buffer, ICharmap, ScreenDraw } from "./screen";
 import * as S from "./screen";
 
 export function setup() {
@@ -50,8 +50,8 @@ const keyboard = new KeyboardMonitor();
 
 class InputBuffer {
     public input: string = "";
-    public inputChanged: (text: string, done: boolean) => void;
-    public keyPressed: (key: string) => void;
+    public inputChanged?: (text: string, done: boolean) => void;
+    public keyPressed?: (key: string) => void;
     constructor() {
         const onkey = (e: KeyboardEvent) => {
             if (this.keyPressed) {
@@ -103,6 +103,7 @@ class InputBuffer {
     destroy() { }
 }
 
+// State of a screen buffer. This includes pixels and color state.
 class BufferState {
     public x: number = 0;
     public y: number = 0;
@@ -113,6 +114,7 @@ class BufferState {
     constructor(public buffer: Buffer) { }
 }
 
+// The primary VirtualPC implementation. It draws to a canvas.
 export class CanvasPC implements vm.IVirtualPC {
     public textOutput: string = "";
     private graphicsViewport: S.Viewport;
@@ -124,10 +126,10 @@ export class CanvasPC implements vm.IVirtualPC {
     private rows: number;
     private cols: number;
 
-    private s: ScreenDraw;
+    private s: ScreenDraw | undefined;
     private screenBuffers: BufferState[];
     private activeBufferIndex: number = 0;
-    private charmap: Charmap;
+    private charmap: ICharmap;
     private dirty = true;
     private currentScreen: number = 0;
     private canvas: HTMLCanvasElement;
@@ -181,7 +183,8 @@ export class CanvasPC implements vm.IVirtualPC {
         if (this.canvas) {
             this.canvas.remove();
             this.s.free();
-            this.s = null;
+            this.s = undefined;
+            this.canvas = undefined;
         }
         this.canvas = document.createElement("canvas");
         [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
@@ -200,8 +203,8 @@ export class CanvasPC implements vm.IVirtualPC {
     cursor(show: boolean) { }
     locate(y?: number, x?: number) {
         const buf = this.abuf();
-        buf.x = Math.max(0, Math.min(Math.floor(x), this.cols - 1));
-        buf.y = Math.max(0, Math.min(Math.floor(y), this.rows - 1));
+        if (x !== undefined) buf.x = Math.max(0, Math.min(Math.floor(x), this.cols - 1));
+        if (y !== undefined) buf.y = Math.max(0, Math.min(Math.floor(y), this.rows - 1));
     }
 
     print(str: string) {
@@ -230,6 +233,7 @@ export class CanvasPC implements vm.IVirtualPC {
             }
         }
     }
+
     input(completed: (text: string) => void) {
         const inputx = this.abuf().x;
         const inputy = this.abuf().y;
@@ -243,7 +247,7 @@ export class CanvasPC implements vm.IVirtualPC {
             this.print(text);
             prevText = text;
             if (done) {
-                this.inputBuffer.inputChanged = null;
+                this.inputBuffer.inputChanged = undefined;
                 this.inputBuffer.input = "";
                 completed(text);
             }
@@ -259,7 +263,7 @@ export class CanvasPC implements vm.IVirtualPC {
             result += text;
             count++;
             if (count === n) {
-                this.inputBuffer.keyPressed = null;
+                this.inputBuffer.keyPressed = undefined;
                 callback(result);
             }
         };
@@ -270,13 +274,16 @@ export class CanvasPC implements vm.IVirtualPC {
         const buf = this.abuf();
         buf.fgcolor = fc;
     }
+
     setBackColor(bc: number) {
         const buf = this.abuf();
         buf.bgcolor = bc;
     }
+
     foreColor(): number { return this.abuf().fgcolor; }
     backColor(): number { return this.abuf().bgcolor; }
     resetPalette() {
+        if (!this.s) return;
         const pal = S.kScreenPalettes.get(this.currentScreen);
         if (pal) {
             this.s.setPalette(pal);
@@ -284,6 +291,7 @@ export class CanvasPC implements vm.IVirtualPC {
         }
     }
     setPaletteAttribute(attr: number, color: number) {
+        if (!this.s) return;
         const rgb = [color % 256, Math.trunc(color / 256) % 256, Math.trunc(color / 65536) % 256];
         this.s.setPaletteEntry(attr, rgb);
         this.dirty = true;
@@ -310,6 +318,7 @@ export class CanvasPC implements vm.IVirtualPC {
         this.abuf().printViewBottom = bottom - 1;
     }
     setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
+        if (!this.s) return;
         [this.graphicsViewport.left, this.graphicsViewport.top] = this.s.buffer.fullViewport.clamp(Math.min(x1, x2), Math.min(y1, y2));
         [this.graphicsViewport.right, this.graphicsViewport.bottom] = this.s.buffer.fullViewport.clamp(Math.max(x1, x2), Math.max(y1, y2));
         this.relativeViewport = relative;
@@ -393,15 +402,15 @@ export class CanvasPC implements vm.IVirtualPC {
                     break;
                 }
                 case vm.DrawInstructionID.kRotation: // a=angle*90
-                    rotation = inst.a * (Math.PI / 2);
+                    rotation = (inst.a as number) * (Math.PI / 2);
                     break;
                 case vm.DrawInstructionID.kTurn: // a=angle
-                    rotation = inst.a * (Math.PI / 180);
+                    rotation = (inst.a as number) * (Math.PI / 180);
                     break;
                 case vm.DrawInstructionID.kColor: // a=color
-                    buf.fgcolor = inst.a;
+                    buf.fgcolor = inst.a as number;
                 case vm.DrawInstructionID.kScale: // a=scale
-                    scale = inst.a / 4.0;
+                    scale = (inst.a as number) / 4.0;
                     break;
                 case vm.DrawInstructionID.kPaint: // a=fill,b=border
                     // TODO
@@ -411,6 +420,7 @@ export class CanvasPC implements vm.IVirtualPC {
     }
     bitsPerPixel(): number {
         const pal = S.kScreenPalettes.get(this.currentScreen);
+        if (!pal) return 8;
         const colorsCount = pal.length;
         let bitsPerPixel = 1;
         while (1 << (bitsPerPixel) < colorsCount) {
@@ -544,7 +554,7 @@ export class CanvasPC implements vm.IVirtualPC {
     screen(id: number | undefined, colorswitch: number | undefined, apage: number | undefined, vpage: number | undefined) {
         if (id !== undefined) {
             if (!S.kScreenDims.has(id)) return;
-            const [w, h] = S.kScreenDims.get(id);
+            const [w, h] = S.kScreenDims.get(id) as any;
             switch (id) {
                 case 1: case 2: case 7: case 8: case 13:
                     this.charmap = chars.get8x8();
@@ -564,10 +574,12 @@ export class CanvasPC implements vm.IVirtualPC {
             }
             if (id !== this.currentScreen) {
                 this.setDims(w, h, this.charmap.width, this.charmap.height, bufferCount);
-                this.s.setPalette(S.kScreenPalettes.get(id));
+                if (!this.s) return;
+                this.s.setPalette(S.kScreenPalettes.get(id) as any);
                 this.currentScreen = id;
             }
         }
+        if (!this.s) return;
         if (apage !== undefined && apage >= 0 && apage < this.screenBuffers.length) {
             this.activeBufferIndex = apage;
         }

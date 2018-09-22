@@ -1,0 +1,58 @@
+<html>
+<head>
+    <link rel="stylesheet" href="style.css">
+    <link rel="stylesheet" href="codemirror.css">
+</head>
+<body>
+    <div id="editscreen">
+        <div id="menubar" class="menubar">
+            <div id="file" class="menuitem menutitle" onclick="qb.showMenu('filemenu')">File
+                <div id="filemenu" class="popupmenu">
+                    <div id="new" class="menuitem" onclick="qb.newfile()">New</div>
+                    <div id="new" class="menuitem" onclick="qb.open()">Open</div>
+                    <div class="menuitem">----</div>
+                    <div id="save" class="menuitem" onclick="qb.save()">Save</div>
+                    <div id="save" class="menuitem" onclick="qb.deleteprogram()">Delete</div>
+                    <div id="share" class="menuitem">Share</div>
+                </div>
+            </div>
+            <div class="menutitlespacer"></div>
+            <div id="run" class="menuitem menutitle" onclick="qb.showMenu('runmenu')">Run
+                <div id="runmenu" class="popupmenu">
+                    <div id="start" class="menuitem" onclick="qb.start();">Start [ Ctrl+/ ]</div>
+                </div>
+            </div>
+        </div>
+        <div id="loading" class="hidden">
+            ~ Loading ~
+        </div>
+        <div id="opendialog" class="hidden">
+            <div class="titlebar">Open Program<div class="X" onclick="qb.closeOpenDialog()">X</div></div>
+            <div class="programlist">
+                <div style="max-height: 85%; overflow-y:scroll">
+                        <table id="openprogramtable">
+                        </table>
+                </div>
+            </div>
+        </div>
+        <div id="workspace" class="workspace" onclick="qb.hideMenus()">
+            <textarea id="editor" class="workspace editor" style="height: 100%"></textarea>
+        </div>
+    </div>
+    <div id="runscreen" class="runscreen hidden">
+        <div id="runbar" class="menubar">
+            <div id="program_running" class="menustatus menutitle">Running Program...</div>
+            <div id="program_complete" class="menustatus menutitle hidden">Program Complete, Press a key...</div>
+            <div class="menutitlespacer"></div>
+            <div class="menuitem menutitle" onclick="qb.restart()">Restart</div>
+            <div class="menutitlespacer"></div>
+            <div class="menuitem menutitle" onclick="qb.stop()">Return To Editor</div>
+            <div class="menutitlespacer"></div>
+        </div>
+
+        <div id="canvasholder"></div>
+    </div>
+</body>
+<script async src="dist/qb-bundle.js"></script>
+</html>
+

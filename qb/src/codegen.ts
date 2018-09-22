@@ -1864,6 +1864,8 @@ export class CodegenCtx implements ICtx {
         program.inst.push(new vm.Instruction(id, instArgs));
         const exe = new vm.Execution(program, new vm.NullPC());
         exe.run();
+        if (exe.exception) return undefined;
+
         const result = exe.stack[instArgs[0]] as vm.VariableValue;
         if (lhs.type === kStringType) {
             return Val.newStringLiteral(result.strVal());

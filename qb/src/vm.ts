@@ -1342,10 +1342,10 @@ ${listing}
                 this.save(args[0], VariableValue.newLong(toLong(this.read(args[1]).val as number)));
                 break;
             case InstructionID.TO_SINGLE:
-                this.save(args[0], VariableValue.single(kSingleType, toInt(this.read(args[1]).val as number)));
+                this.save(args[0], VariableValue.single(kSingleType, Math.fround((this.read(args[1]).val as number))));
                 break;
             case InstructionID.TO_DOUBLE:
-                this.save(args[0], VariableValue.single(kDoubleType, toInt(this.read(args[1]).val as number)));
+                this.save(args[0], VariableValue.single(kDoubleType, this.read(args[1]).val as number));
                 break;
             case InstructionID.PRINT: {
                 const argVal = this.read(args[0]);

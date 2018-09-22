@@ -1,4 +1,4 @@
-import { Buffer, Charmap } from "./screen";
+import { Buffer, ICharmap } from "./screen";
 
 enum CharmapName {
     k8x8,
@@ -107,7 +107,7 @@ export function setup() {
     }
 }
 
-class CharMap implements Charmap {
+class CharMap implements ICharmap {
     constructor(public width: number, public height: number, private data_: Buffer) { }
     data() { return this.data_; }
     charOffset(code: number): number[] {
@@ -138,6 +138,6 @@ function newCharmap(name: CharmapName) {
     return new CharMap(8, charHeight, buf);
 }
 
-export function get8x16(): Charmap { return newCharmap(CharmapName.k8x16); }
-export function get8x8(): Charmap { return newCharmap(CharmapName.k8x8); }
-export function get8x14(): Charmap { return newCharmap(CharmapName.k8x14); }
+export function get8x16(): ICharmap { return newCharmap(CharmapName.k8x16); }
+export function get8x8(): ICharmap { return newCharmap(CharmapName.k8x8); }
+export function get8x14(): ICharmap { return newCharmap(CharmapName.k8x14); }

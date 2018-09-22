@@ -1,0 +1,277 @@
+@font-face {
+    font-family: dos;
+    /*src: url("static/dos.woff") format('woff');*/
+    src: url("static/PxPlus_IBM_VGA8.ttf") format('truetype');
+}
+body {
+    margin: 0px;
+}
+.menubar {
+    background-color: #aaaaaa;
+    color: black;
+}
+
+.menubar, .menuitem, #opendialog *, .runscreen *, #loading * {
+    font-family: dos;
+    font-size: 15pt;
+}
+table {
+    font-size: unset;
+}
+.CodeMirror {
+    height: 100% !important;
+}
+.menuitem {
+    background-color: #aaaaaa;
+    color: black;
+    margin-left: 0.5em;
+    margin-right: 0.5em;
+    cursor: pointer;
+}
+.menustatus{
+    background-color: #aaaaaa;
+    color:yellow;
+    margin-left: 0.5em;
+    margin-right: 0.5em;
+}
+.menutitlespacer{
+    width: 2em;
+    display: table-cell;
+}
+.menutitle {
+    display: table-cell;
+}
+
+.menuitem:hover {
+    background-color: white;
+    color: black;
+}
+
+.selecteditem {
+    background-color: black;
+    color: white;
+}
+
+.popupmenu {
+    background-color: #aaaaaa;
+    color: black;
+    font-family: monospace;
+    position: absolute;
+    z-index: 100;
+    display: none;
+}
+
+.menuopen {
+    display: block;
+}
+
+.workspace {
+    background-color: #0000aa;
+    color: #aaaaaa;
+    width: 100%;
+    height: 100%;
+    position: relative;
+}
+
+.runscreen {
+    width: 100%;
+    height: 100vw;
+}
+.canvasbox{
+    width: 100vw;
+    height:75vw;
+}
+/*
+.canvas {
+    width: 640px;
+    height:480px;
+}
+*/
+
+.hidden {
+    display: none !important;
+}
+
+.statusbar {
+    background-color: #00aaaa;
+    color: black;
+}
+
+#opendialog {
+    background-color: #aaaaaa;
+    color: black;
+    position: fixed;
+    width: 50%;
+    height: 80%;
+    top: 30px;
+    left: 25%;
+    z-index: 100;
+}
+
+.titlebar {
+    text-align: center;
+    height: 0.5em;
+}
+
+.programlist {
+    padding: 20px;
+    margin: 20px;
+    border: black;
+    border-style: solid;
+    border-width: 1px;
+    position: relative;
+    height: 90%;
+}
+
+.textbutton {
+    text-align: center;
+}
+.textbutton:hover {
+    background-color: white;
+    color: black;
+}
+#openprogramtable td:hover {
+    background-color: white;
+    color: black;
+}
+
+.X {
+    float: right;
+    cursor: pointer;
+}
+#loading {
+    position: fixed;
+    z-index: 999;
+    width: 40vw;
+    height: 5em;
+    background-color: #aaaaaa;
+    border-color: black;
+    border-style: solid;
+    border-width: 1px;
+    top: 40%;
+    left:30vw;
+    text-align: center;
+    vertical-align: center;
+    line-height: 5em;
+    margin: 20px;
+}
+
+
+
+
+.cm-s-dos.CodeMirror {
+    background: #0000aa;
+    color: #aaaaaa;
+}
+.cm-s-dos div.CodeMirror-selected { 
+    background-color: white;
+ }
+.cm-s-dos .cm-header {color: blue;}
+.cm-s-dos .cm-quote {color: #090;}
+.cm-s-dos .cm-keyword {color: #708;}
+.cm-s-dos .cm-atom {color: #219;}
+.cm-s-dos .cm-number {color: #164;}
+.cm-s-dos .cm-def {color: #00f;}
+.cm-s-dos .cm-variable,
+.cm-s-dos .cm-punctuation,
+.cm-s-dos .cm-property,
+.cm-s-dos .cm-operator {}
+.cm-s-dos .cm-variable-2 {color: #05a;}
+.cm-s-dos .cm-variable-3, .cm-s-dos .cm-type {color: #085;}
+.cm-s-dos .cm-comment {color: #777777;}
+.cm-s-dos .cm-string {color:#00aaaa;}
+.cm-s-dos .cm-string-2 {color: #00aaaa;}
+.cm-s-dos .cm-meta {color: #555;}
+.cm-s-dos .cm-qualifier {color: #555;}
+.cm-s-dos .cm-builtin {color: #30a;}
+.cm-s-dos .cm-bracket {color: #997;}
+.cm-s-dos .cm-tag {color: #170;}
+.cm-s-dos .cm-attribute {color: #00c;}
+.cm-s-dos .cm-hr {color: #999;}
+.cm-s-dos .cm-link {color: #00c;}
+.cm-s-dos .cm-error {color: #f00;}
+.cm-s-dos .CodeMirror-cursor { border-left: 2px solid white; }
+
+.CodeMirror {
+    font-size: 15pt;
+    font-family: dos !important;
+}
+
+
+
+
+
+/* The lint marker gutter */
+.CodeMirror-lint-markers {
+    width: 16px;
+  }
+  
+  .CodeMirror-lint-tooltip {
+    background-color: #ffd;
+    border: 1px solid black;
+    border-radius: 4px 4px 4px 4px;
+    color: black;
+    font-family: monospace;
+    font-size: 10pt;
+    overflow: hidden;
+    padding: 2px 5px;
+    position: fixed;
+    white-space: pre;
+    white-space: pre-wrap;
+    z-index: 100;
+    max-width: 600px;
+    opacity: 0;
+    transition: opacity .4s;
+    -moz-transition: opacity .4s;
+    -webkit-transition: opacity .4s;
+    -o-transition: opacity .4s;
+    -ms-transition: opacity .4s;
+  }
+  
+  .CodeMirror-lint-mark-error, .CodeMirror-lint-mark-warning {
+    background-position: left bottom;
+    background-repeat: repeat-x;
+  }
+  
+  .CodeMirror-lint-mark-error {
+    background-image:
+    url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sJDw4cOCW1/KIAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAHElEQVQI12NggIL/DAz/GdA5/xkY/qPKMDAwAADLZwf5rvm+LQAAAABJRU5ErkJggg==")
+    ;
+  }
+  
+  .CodeMirror-lint-mark-warning {
+    background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAQAAAADCAYAAAC09K7GAAAAAXNSR0IArs4c6QAAAAZiS0dEAP8A/wD/oL2nkwAAAAlwSFlzAAALEwAACxMBAJqcGAAAAAd0SU1FB9sJFhQXEbhTg7YAAAAZdEVYdENvbW1lbnQAQ3JlYXRlZCB3aXRoIEdJTVBXgQ4XAAAAMklEQVQI12NkgIIvJ3QXMjAwdDN+OaEbysDA4MPAwNDNwMCwiOHLCd1zX07o6kBVGQEAKBANtobskNMAAAAASUVORK5CYII=");
+  }
+  
+  .CodeMirror-lint-marker-error, .CodeMirror-lint-marker-warning {
+    background-position: center center;
+    background-repeat: no-repeat;
+    cursor: pointer;
+    display: inline-block;
+    height: 16px;
+    width: 16px;
+    vertical-align: middle;
+    position: relative;
+  }
+  
+  .CodeMirror-lint-message-error, .CodeMirror-lint-message-warning {
+    padding-left: 18px;
+    background-position: top left;
+    background-repeat: no-repeat;
+  }
+  
+  .CodeMirror-lint-marker-error, .CodeMirror-lint-message-error {
+    background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAAHlBMVEW7AAC7AACxAAC7AAC7AAAAAAC4AAC5AAD///+7AAAUdclpAAAABnRSTlMXnORSiwCK0ZKSAAAATUlEQVR42mWPOQ7AQAgDuQLx/z8csYRmPRIFIwRGnosRrpamvkKi0FTIiMASR3hhKW+hAN6/tIWhu9PDWiTGNEkTtIOucA5Oyr9ckPgAWm0GPBog6v4AAAAASUVORK5CYII=");
+  }
+  
+  .CodeMirror-lint-marker-warning, .CodeMirror-lint-message-warning {
+    background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAMAAAAoLQ9TAAAANlBMVEX/uwDvrwD/uwD/uwD/uwD/uwD/uwD/uwD/uwD6twD/uwAAAADurwD2tQD7uAD+ugAAAAD/uwDhmeTRAAAADHRSTlMJ8mN1EYcbmiixgACm7WbuAAAAVklEQVR42n3PUQqAIBBFUU1LLc3u/jdbOJoW1P08DA9Gba8+YWJ6gNJoNYIBzAA2chBth5kLmG9YUoG0NHAUwFXwO9LuBQL1giCQb8gC9Oro2vp5rncCIY8L8uEx5ZkAAAAASUVORK5CYII=");
+  }
+  
+  .CodeMirror-lint-marker-multiple {
+    background-image: url("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAcAAAAHCAMAAADzjKfhAAAACVBMVEUAAAAAAAC/v7914kyHAAAAAXRSTlMAQObYZgAAACNJREFUeNo1ioEJAAAIwmz/H90iFFSGJgFMe3gaLZ0od+9/AQZ0ADosbYraAAAAAElFTkSuQmCC");
+    background-repeat: no-repeat;
+    background-position: right bottom;
+    width: 100%; height: 100%;
+  }
+  

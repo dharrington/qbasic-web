@@ -98,7 +98,7 @@ export class Buffer {
         }
     }
 
-    drawChar(x: number, y: number, code: number, fg: number, bg: number, charmap: Charmap, mask: Viewport) {
+    drawChar(x: number, y: number, code: number, fg: number, bg: number, charmap: ICharmap, mask: Viewport) {
         const [w, h] = [charmap.width, charmap.height];
         x *= w;
         y *= h;
@@ -117,119 +117,75 @@ export class Buffer {
     drawCircle(x0: number, y0: number, radius: number, color: number, start: number, stop: number, aspect: number, mask: Viewport) {
         const Xscale = aspect > 1 ? 1 / aspect : 1.0;
         const Yscale = aspect < 1 ? aspect : 1.0;
-        const L = Math.sqrt(radius * radius / 2);
+        const R2 = radius * radius;
+        const bR = Math.ceil(radius / Math.SQRT2);
+
         const fix = (x: number, y: number) => {
-            if (Math.abs(x) <= Math.abs(y)) {
-                x = Math.round(x);
-                if (y > 0) {
-                    y = Math.sqrt(radius * radius - x * x);
-                } else {
-                    y = -Math.sqrt(radius * radius - x * x);
-                }
-            } else {
+            if (Math.abs(x) >= Math.abs(y)) {
                 y = Math.round(y);
                 if (x > 0) {
-                    x = Math.sqrt(radius * radius - y * y);
+                    x = Math.sqrt(R2 - y * y);
                 } else {
-                    x = -Math.sqrt(radius * radius - y * y);
+                    x = -Math.sqrt(R2 - y * y);
+                }
+                return [x, y];
+            } else {
+                x = Math.round(x);
+                if (y > 0) {
+                    y = Math.sqrt(R2 - x * x);
+                } else {
+                    y = -Math.sqrt(R2 - x * x);
+                }
+                return [x, y];
+            }
+        };
+        function* circlePoints() {
+            for (let y = 0; y >= -bR; y--) {
+                yield [Math.sqrt(R2 - y * y), y];
+            }
+            for (let x = bR; x >= -bR; x--) {
+                yield [x, -Math.sqrt(R2 - x * x)];
+            }
+            for (let y = -bR; y <= bR; y++) {
+                yield [-Math.sqrt(R2 - y * y), y];
+            }
+            for (let x = -bR; x <= bR; x++) {
+                yield [x, Math.sqrt(R2 - x * x)];
+            }
+            for (let y = bR; y > 0; y--) {
+                yield [Math.sqrt(R2 - y * y), y];
+            }
+        }
+        const atAngle = (a) => {
+            const [x, y] = fix(radius * Math.cos(a), radius * -Math.sin(a));
+            return [Math.round(x), Math.round(y)];
+        };
+
+        const [startx, starty] = atAngle(start);
+        const [endx, endy] = atAngle(stop);
+        let penOn = start > stop;
+        const smallDistance = stop >= start && (stop - start < 1);
+
+        for (const [x, y] of circlePoints()) {
+            const [px, py] = [Math.round(x * Xscale), Math.round(y * Yscale)];
+            if (Math.round(x) === startx && Math.round(y) === starty) {
+                penOn = true;
+            }
+            if (penOn) this.pset(px + x0, py + y0, color, mask);
+            if (Math.round(x) === endx && Math.round(y) === endy) {
+                if (endx === startx && endy === starty && stop > start + 3) {
+                } else {
+                    penOn = false;
                 }
             }
-            return [x, y];
-        };
-
-        const next = (x: number, y: number) => {
-            if (Math.abs(x) <= Math.abs(y)) {
-                if (y > 0) x++;
-                else x--;
-            } else {
-                if (x > 0) y--;
-                else y++;
-            }
-            return fix(x, y);
-        };
-
-        const atAngle = (a) => {
-            return fix(radius * Math.cos(a), radius * -Math.sin(a));
-        };
-
-        let [x, y] = atAngle(start);
-        let [endx, endy] = atAngle(stop);
-        endx = Math.round(endx);
-        endy = Math.round(endy);
-        const smallDistance = stop >= start && (stop - start < 1);
-        for (let i = 0; i < 1000; i++) {
-            const [px, py] = [Math.round(x * Xscale), Math.round(y * Yscale)];
-            this.pset(px + x0, py + y0, color, mask);
-            if (px === endx && py === endy && (i !== 0 || smallDistance)) {
-                break;
-            }
-            [x, y] = next(x, y);
         }
     }
-    /*
-L=SQR(R^2/2)
-
-FOR X = 0 TO L
-  Y=SQR(R*R - X*X)
-  PSET (200+X, 200+Y)
-NEXT X
-    */
-    // drawCircle(x0: number, y0: number, radius: number, color: number, mask: Viewport | undefined) {
-    //     let x = radius - 1;
-    //     const l = Math.sqrt(radius * radius / 2);
-    //     for (x = 0; x <= l; x++) {
-    //         const y = Math.round(Math.sqrt(radius * radius - x * x));
-    //         this.pset(x0 + x, y0 + y, color);
-    //         this.pset(x0 + y, y0 + x, color);
-    //         this.pset(x0 - y, y0 + x, color);
-    //         this.pset(x0 - x, y0 + y, color);
-    //         this.pset(x0 - x, y0 - y, color);
-    //         this.pset(x0 - y, y0 - x, color);
-    //         this.pset(x0 + y, y0 - x, color);
-    //         this.pset(x0 + x, y0 - y, color);
-    //     }
-    // }
-
-    // drawArc(x0: number, y0: number, radius: number, color: number, start: number, end: number, aspect: number) {
-    //     if (start < 0) start = -start;
-    //     if (end < 0) end = -end;
-
-    //     let delta = end - start;
-    //     if (delta < 0) {
-    //         delta += Math.PI * 2;
-    //     }
-
-    //     const line = (x1, y1, x2, y2) => {
-    //         x1 = Math.round(x1);
-    //         y1 = Math.round(y1);
-    //         x2 = Math.round(x2);
-    //         y2 = Math.round(y2);
-    //         this.pset(x1, y1, color);
-    //         if (x2 === x1 && y2 === y1) return; // common case.
-    //         this.pset(x2, y2, color); // TODO: fill in center
-    //     };
-    //     // const circum = Math.PI * 2 * radius;
-    //     // 1 pixel length spans this angle. Use this as the interval.
-    //     const pixelAngle = 1 / (radius * Math.PI)
-    //     const iterations = Math.ceil(delta / pixelAngle);
-    //     let a = start;
-    //     for (let i = 0; i < iterations; i++) {
-    //         let anext = a + pixelAngle;
-    //         if (i === iterations - 1) {
-    //             anext = end;
-    //         }
-    //         const [x1, y1] = [x0 + Math.cos(a) * radius, y0 + -Math.sin(a) * radius];
-    //         const [x2, y2] = [x0 + Math.cos(anext) * radius, y0 + -Math.sin(anext) * radius];
-    //         line(x1, y1, x2, y2);
-    //         a = anext;
-    //     }
-    // }
 
     paint(x0: number, y0: number, paintColor: number, borderColor: number, mask: Viewport) {
         const painted = new Set();
         const stack = [[x0, y0]];
         while (stack.length) {
-            const [x, y] = stack.pop();
+            const [x, y] = stack.pop() as number[];
             if (!mask.within(x, y)) continue;
             const pos = this.offsetAt(x, y);
             if (painted.has(pos)) continue;
@@ -280,7 +236,7 @@ NEXT X
         let error = 0.0;
         let y = y1;
         let styleIndex = 0;
-        for (let x = x1; x < x2; x++) {
+        for (let x = x1; x <= x2; x++) {
             if (style & bitMod16(styleIndex++)) {
                 this.pset(x, y, color, mask);
             }
@@ -298,7 +254,7 @@ NEXT X
         let error = 0.0;
         let x = x1;
         let styleIndex = 0;
-        for (let y = y1; y < y2; y++) {
+        for (let y = y1; y <= y2; y++) {
             if (style & bitMod16(styleIndex++)) {
                 this.pset(x, y, color, mask);
             }
@@ -311,12 +267,13 @@ NEXT X
     }
 }
 
-export interface Charmap {
+export interface ICharmap {
     height: number;
     width: number;
     data(): Buffer;
     charOffset(code: number): number[];
 }
+
 function hexToRgb(hex: string) {
     let c;
     if (/^#([A-Fa-f0-9]{3}){1,2}$/.test(hex)) {
@@ -378,14 +335,18 @@ export class ScreenDraw {
     private shaderProgram: WebGLShader;
     private gl: WebGLRenderingContext;
     private palette: Uint8Array;
-    private dtors = [];
+    private dtors: any[] = [];
     constructor(private canvas: HTMLCanvasElement, public width: number, public height: number) {
         this.buffer = new Buffer(width, height);
         this.palette = new Uint8Array(256 * 3);
-        this.setPalette(kScreenPalettes.get(0));
-        this.gl = this.canvas.getContext("webgl");
-        const gl = this.gl;
-        this.positionBuffer = gl.createBuffer();
+        this.setPalette(kScreenPalettes.get(0) as any);
+        const gl = this.canvas.getContext("webgl");
+        if (!gl) {
+            window.alert("Can't get WebGL context");
+            return;
+        }
+        this.gl = gl;
+        this.positionBuffer = gl.createBuffer() as WebGLBuffer;
         gl.bindBuffer(gl.ARRAY_BUFFER, this.positionBuffer);
         const positions = [
             1.0, 1.0,
@@ -395,8 +356,9 @@ export class ScreenDraw {
         ];
         gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(positions), gl.STATIC_DRAW);
         const s = initShaderProgram(gl);
+        if (!s) return;
         this.dtors.push(s.dtor);
-        this.shaderProgram = s.program;
+        this.shaderProgram = s.program as WebGLShader;
     }
     setPaletteEntry(attr: number, rgb: number[]) {
         this.palette[attr * 3 + 0] = rgb[0];
@@ -481,7 +443,7 @@ export class ScreenDraw {
 function initShaderProgram(gl: WebGLRenderingContext) {
     const vertexShader = loadShader(gl, gl.VERTEX_SHADER, vsSource);
     const fragmentShader = loadShader(gl, gl.FRAGMENT_SHADER, fsSource);
-
+    if (!vertexShader || !fragmentShader) return;
     // Create the shader program
 
     const shaderProgram = gl.createProgram();
@@ -490,7 +452,6 @@ function initShaderProgram(gl: WebGLRenderingContext) {
     gl.linkProgram(shaderProgram);
 
     // If creating the shader program failed, alert
-
     if (!gl.getProgramParameter(shaderProgram, gl.LINK_STATUS)) {
         alert("Unable to initialize the shader program: " + gl.getProgramInfoLog(shaderProgram));
         return null;
@@ -515,7 +476,7 @@ function loadShader(gl: WebGLRenderingContext, type, source) {
     if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
         alert("An error occurred compiling the shaders: " + gl.getShaderInfoLog(shader));
         gl.deleteShader(shader);
-        return null;
+        return undefined;
     }
 
     return {
