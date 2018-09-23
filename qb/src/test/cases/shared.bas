@@ -1,12 +1,23 @@
 DECLARE SUB MYSUB
 DIM SHARED X AS INTEGER
-
+DIM Y AS INTEGER, Q AS STRING
+Q = "QQ"
+Z$ = "Z-HI"
+Y = 2
 X = 1
 MYSUB
 
 SUB MYSUB
+  SHARED Y AS INTEGER, Z$, Q AS STRING
   X = X + 1
+  Y = Y + 2
+  Q = Q + Q
   PRINT X
+  PRINT Y
+  PRINT Q, Z$
+  Q = ""
 END SUB
 REM output
  2 
+ 4 
+QQQQ	Z-HI

@@ -15,7 +15,7 @@
 // codegen.ts - Generates code for QBasic programs.
 
 import { basicType, CaseCondition, Coord, ICtx, ILocator, kNullVal, Location, MVal, Token, Val, ValKind } from "./parse";
-import { BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
+import { BaseType, baseTypeToSigil, FunctionType, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type, sigilToBaseType } from "./types";
 import * as vm from "./vm";
 
 // While writing the program, these bits are added to stack offsets to indicate the type of variable.
@@ -443,7 +443,50 @@ export class CodegenCtx implements ICtx {
         }
         return Val.newField(field.name, field.type, v);
     }
+    shared(name: Token, isArray: boolean, sigil: BaseType, ty: Type): void {
+        // This is quite a pain. The referred variable can be either a DIM or auto variable.
+        if (!this.parent) {
+            this.error("illegal outside SUB / FUNCTION");
+            return;
+        }
+        const nameText = name instanceof Token ? name.text : name as string;
+        const loc = name instanceof Token ? name.loc : undefined;
+        const existingDefinition = this.dimVars.get(nameText.toUpperCase());
+        if (existingDefinition !== undefined) {
+            this.error("duplicate definition", loc);
+            return;
+        }
+        if (sigil === BaseType.kNone) {
+            for (const suffix of ["$", "%", "&", "!", "#", ""]) {
+                if (this.autoVars.has(nameText.toUpperCase() + suffix)) {
+                    this.error("duplicate definition", loc);
+                    return;
+                }
+            }
+        } else {
+            if (this.autoVars.has(nameText + baseTypeToSigil(sigil))) {
+                this.error("duplicate definition", loc);
+                return;
+            }
+        }
 
+        const parentVar = this.parent.findVariable(name.text, sigil);
+        if (!parentVar) {
+            this.error("undeclared variable");
+            return;
+        }
+
+        if (!parentVar.type.equals(ty)) {
+            this.error("duplicate definition");
+            return;
+        }
+
+        if (parentVar.dimmed) {
+            this.dimVars.set(name.text.toUpperCase(), parentVar.copy());
+        } else {
+            this.autoVars.set(nameText.toUpperCase() + baseTypeToSigil(sigil), parentVar.copy());
+        }
+    }
     dim(name: Token | string, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean) {
         const nameText = name instanceof Token ? name.text : name as string;
         const loc = name instanceof Token ? name.loc : undefined;
@@ -1030,10 +1073,12 @@ export class CodegenCtx implements ICtx {
             case "POINT": return callWithReturn(vm.InstructionID.POINT, kIntType, args);
             case "CURRENT_POINT": return callWithReturn(vm.InstructionID.CURRENT_POINT, kIntType, args);
             case "VIEW": return callNoReturn(vm.InstructionID.VIEW, args);
+            case "WINDOW": return callNoReturn(vm.InstructionID.WINDOW, args);
             case "VIEW_PRINT": return callNoReturn(vm.InstructionID.VIEW_PRINT, args);
             case "SCREEN": return callNoReturn(vm.InstructionID.SCREEN, args);
             case "STRING": return callWithReturn(vm.InstructionID.STRING, kStringType, args);
             case "SLEEP": return callNoReturn(vm.InstructionID.SLEEP, args);
+            case "PMAP": return callWithReturn(vm.InstructionID.PMAP, kSingleType, args);
             case "SOUND": return undefined; // TODO
             case "BEEP": return undefined; // TODO
         }

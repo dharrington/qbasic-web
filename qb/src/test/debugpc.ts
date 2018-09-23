@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as vm from "./vm";
+import * as vm from "../vm";
 
 // A virtual PC used for running QBasic programs without a real user interface. Primarily used for testing.
 export class DebugPC implements vm.IVirtualPC {
@@ -85,4 +85,7 @@ export class DebugPC implements vm.IVirtualPC {
     setViewPrint(top: number, bottom: number) { }
     setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
     }
+    setViewCoordinates(x1: number, y1: number, x2: number, y2: number, relative: boolean) { }
+    mapToScreen(x: number, y: number): [number, number] { return [0, 0]; }
+    mapFromScreen(x: number, y: number): [number, number] { return [0, 0]; }
 }

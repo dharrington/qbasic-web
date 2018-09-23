@@ -129,6 +129,15 @@ export class CanvasPC implements vm.IVirtualPC {
     private s: ScreenDraw | undefined;
     private screenBuffers: BufferState[];
     private activeBufferIndex: number = 0;
+
+    private viewCoordinateBox?: [number, number, number, number] = undefined;
+    private viewCoordinateInverted = false;
+
+    private viewTranslateX = 0;
+    private viewTranslateY = 0;
+    private viewScalingX = 1;
+    private viewScalingY = 1;
+
     private charmap: ICharmap;
     private dirty = true;
     private currentScreen: number = 0;
@@ -175,6 +184,7 @@ export class CanvasPC implements vm.IVirtualPC {
         this.abuf().y += 1;
     }
     setDims(w: number, h: number, charWidth: number, charHeight: number, bufferCount: number) {
+        this.viewCoordinateBox = undefined;
         this.charHeight = charHeight;
         this.width = w;
         this.height = h;
@@ -304,6 +314,7 @@ export class CanvasPC implements vm.IVirtualPC {
         if (!color) {
             color = buf.fgcolor;
         }
+        [x, y] = this.toScreenSpaceRounded(x, y);
         buf.buffer.pset(x, y, color, this.graphicsViewport);
         this.dirty = true;
     }
@@ -322,29 +333,34 @@ export class CanvasPC implements vm.IVirtualPC {
         [this.graphicsViewport.left, this.graphicsViewport.top] = this.s.buffer.fullViewport.clamp(Math.min(x1, x2), Math.min(y1, y2));
         [this.graphicsViewport.right, this.graphicsViewport.bottom] = this.s.buffer.fullViewport.clamp(Math.max(x1, x2), Math.max(y1, y2));
         this.relativeViewport = relative;
+        this.updateViewTransform();
+    }
+    setViewCoordinates(x1: number, y1: number, x2: number, y2: number, screen: boolean) {
+        this.viewCoordinateBox = [x1, y1, x2, y2];
+        this.viewCoordinateInverted = !screen;
+        this.updateViewTransform();
     }
     screenLines(): number {
         return this.rows;
     }
     circle(x: number, y: number, radius: number, color: number | undefined, start: number, end: number, aspect: number) {
         const buf = this.abuf();
-        if (this.relativeViewport) {
-            x += this.graphicsViewport.left;
-            y += this.graphicsViewport.top;
-        }
+        [x, y] = this.toScreenSpaceRounded(x, y); // TODO: is radius scaled too?
+        const screenRadiusX = radius * this.viewScalingX;
+        // View coordinates do not affect aspect. Radius respects view coordinate X-scaling.
+        const screenR = Math.round(screenRadiusX);
+        const screenAspect = aspect;
+
         if (color === undefined) {
             color = buf.fgcolor;
         }
-        buf.buffer.drawCircle(x, y, radius, color, start, end, aspect, this.graphicsViewport);
+        buf.buffer.drawCircle(x, y, screenR, color, start, end, screenAspect, this.graphicsViewport);
         this.dirty = true;
     }
 
     paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) {
         const buf = this.abuf();
-        if (this.relativeViewport) {
-            x += this.graphicsViewport.left;
-            y += this.graphicsViewport.top;
-        }
+        [x, y] = this.toScreenSpaceRounded(x, y);
         if (paintColor === undefined) {
             paintColor = buf.fgcolor;
         }
@@ -356,12 +372,8 @@ export class CanvasPC implements vm.IVirtualPC {
 
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: vm.LineType, style: number) {
         const buf = this.abuf();
-        if (this.relativeViewport) {
-            x1 += this.graphicsViewport.left;
-            y1 += this.graphicsViewport.top;
-            x2 += this.graphicsViewport.left;
-            y2 += this.graphicsViewport.top;
-        }
+        [x1, y1] = this.toScreenSpaceRounded(x1, y1);
+        [x2, y2] = this.toScreenSpaceRounded(x2, y2);
         if (color === undefined) {
             color = buf.fgcolor;
         }
@@ -381,10 +393,8 @@ export class CanvasPC implements vm.IVirtualPC {
 
     draw(currentX: number, currentY: number, instructions: vm.DrawInstruction[]) {
         const buf = this.abuf();
-        if (this.relativeViewport) {
-            currentX += this.graphicsViewport.left;
-            currentY += this.graphicsViewport.top;
-        }
+        [currentX, currentY] = this.toScreenSpaceRounded(currentX, currentY);
+
         let rotation = 0;
         let scale = 1;
         for (const inst of instructions) {
@@ -430,12 +440,8 @@ export class CanvasPC implements vm.IVirtualPC {
     }
     getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
         const buf = this.abuf();
-        if (this.relativeViewport) {
-            x1 += this.graphicsViewport.left;
-            y1 += this.graphicsViewport.top;
-            x2 += this.graphicsViewport.left;
-            y2 += this.graphicsViewport.top;
-        }
+        [x1, y1] = this.toScreenSpaceRounded(x1, y1);
+        [x2, y2] = this.toScreenSpaceRounded(x2, y2);
         // The format for QB GET is the following:
         // Bits per scan line <16-bit integer>
         // Rows <16-bit integer>
@@ -502,10 +508,7 @@ export class CanvasPC implements vm.IVirtualPC {
     putGraphics(x: number, y: number, data: Uint8Array, actionVerb: vm.GraphicsAction) {
         const buf = this.abuf();
         // TODO: actionVerb
-        if (this.relativeViewport) {
-            x += this.graphicsViewport.left;
-            y += this.graphicsViewport.top;
-        }
+        [x, y] = this.toScreenSpaceRounded(x, y);
         if (data.length < 4) return;
         let dataPos = 0;
         let halfPos = 0;
@@ -623,6 +626,49 @@ export class CanvasPC implements vm.IVirtualPC {
             this.dirty = true;
         }
         this.abuf().y -= 1;
+    }
+
+    mapToScreen(x: number, y: number): [number, number] {
+        return this.toScreenSpace(x, y);
+    }
+
+    mapFromScreen(x: number, y: number): [number, number] {
+        return [(x - this.viewTranslateX) / this.viewScalingX, (y - this.viewTranslateY) / this.viewScalingY];
+    }
+
+    private updateViewTransform() {
+        const [x1, y1, x2, y2] = this.viewCoordinateBox ? this.viewCoordinateBox : [0, 0, this.width, this.height];
+        let viewWidth;
+        let viewHeight;
+        let Ox = 0;
+        let Oy = 0;
+        if (this.relativeViewport) {
+            Ox = this.graphicsViewport.left;
+            Oy = this.viewCoordinateInverted ? this.graphicsViewport.bottom : this.graphicsViewport.top;
+            viewWidth = this.graphicsViewport.right - this.graphicsViewport.left;
+            viewHeight = this.graphicsViewport.bottom - this.graphicsViewport.top;
+        } else {
+            Oy = this.viewCoordinateInverted ? this.height : 0;
+            viewWidth = this.width;
+            viewHeight = this.height;
+        }
+        const coordWidth = Math.abs(x1 - x2);
+        const coordHeight = Math.abs(y1 - y2);
+
+        const Mneg = (this.viewCoordinateInverted ? -1 : 1);
+        this.viewScalingX = viewWidth / coordWidth;
+        this.viewScalingY = viewHeight / coordHeight * Mneg;
+
+        this.viewTranslateX = -(viewWidth / coordWidth) * Math.min(x1, x2) + Ox;
+        this.viewTranslateY = -(viewHeight / coordHeight) * Math.min(y1, y2) + Oy;
+    }
+
+    private toScreenSpace(x, y): [number, number] {
+        return [this.viewScalingX * x + this.viewTranslateX, this.viewScalingY * y + this.viewTranslateY];
+    }
+
+    private toScreenSpaceRounded(x, y): [number, number] {
+        return [Math.round(this.viewScalingX * x + this.viewTranslateX), Math.round(this.viewScalingY * y + this.viewTranslateY)];
     }
 
     private abuf(): BufferState {

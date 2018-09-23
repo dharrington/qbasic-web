@@ -53,7 +53,7 @@ export class Viewport {
         return !(x < this.left || y < this.top || x > this.right || y > this.bottom);
     }
     clamp(x: number, y: number): [number, number] {
-        return [Math.min(Math.max(x, this.left), this.right), Math.min(Math.max(x, this.top), this.bottom)];
+        return [Math.min(Math.max(x, this.left), this.right), Math.min(Math.max(y, this.top), this.bottom)];
     }
 }
 export class Buffer {

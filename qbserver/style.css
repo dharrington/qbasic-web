@@ -1,6 +1,5 @@
 @font-face {
     font-family: dos;
-    /*src: url("static/dos.woff") format('woff');*/
     src: url("static/PxPlus_IBM_VGA8.ttf") format('truetype');
 }
 body {

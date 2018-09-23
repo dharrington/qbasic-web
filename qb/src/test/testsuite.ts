@@ -12,11 +12,11 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 import * as codegen from "../codegen";
-import { DebugPC } from "../debugpc";
 import { lex } from "../lex";
 import { parse } from "../parse";
 import * as types from "../types";
 import * as vm from "../vm";
+import { DebugPC } from "./debugpc";
 
 import { AssertionError } from "assert";
 import * as fs from "fs";

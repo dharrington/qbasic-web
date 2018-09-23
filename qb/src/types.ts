@@ -71,7 +71,7 @@ export class Type {
     equals(other: Type): boolean {
         if (this.type !== other.type) return false;
         if (this.type === BaseType.kUserType) {
-            return false; // TODO
+            return this === other;
         }
         return true;
     }

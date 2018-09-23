@@ -55,6 +55,9 @@ export interface IVirtualPC {
     screenLines(): number;
     setViewPrint(top: number, bottom: number);
     setView(x1: number, y1: number, x2: number, y2: number, relative: boolean);
+    setViewCoordinates(x1: number, y1: number, x2: number, y2: number, relative: boolean);
+    mapToScreen(x: number, y: number): [number, number];
+    mapFromScreen(x: number, y: number): [number, number];
     resetPalette();
     setPaletteAttribute(attr: number, color: number);
     sleep(delay: number, done);
@@ -213,95 +216,45 @@ function parseDrawCommand(cmd: string): DrawInstruction[] | undefined {
 }
 
 export class NullPC implements IVirtualPC {
-    print(text: string) {
-        throw new Error("not implemented");
-    }
-    input(completed: (text: string) => void) {
-        throw new Error("not implemented");
-    }
-    setForeColor(fc: number) {
-        throw new Error("not implemented");
-    }
+    print(text: string) { throw new Error("not implemented"); }
+    input(completed: (text: string) => void) { throw new Error("not implemented"); }
+    setForeColor(fc: number) { throw new Error("not implemented"); }
     foreColor() { throw new Error("not implemented"); return 0; }
-    setBackColor(bc: number) {
-        throw new Error("not implemented");
-    }
+    setBackColor(bc: number) { throw new Error("not implemented"); }
     backColor() { throw new Error("not implemented"); return 0; }
-    line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number) {
-        throw new Error("not implemented");
-    }
-    circle(x: number, y: number, radius: number, color: number | undefined) {
-        throw new Error("not implemented");
-    }
-    paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) {
-        throw new Error("not implemented");
-    }
-    draw(currentX: number, currentY: number, instructions: DrawInstruction[]) {
-        throw new Error("not implemented");
-    }
-    pset(x: number, y: number, color?: number) {
-        throw new Error("not implemented");
-    }
-    point(x: number, y: number): number {
-        throw new Error("not implemented");
-    }
-    locate(x?: number, y?: number) {
-        throw new Error("not implemented");
-    }
-    screen() {
-        throw new Error("not implemented");
-    }
-    resetPalette() {
-        throw new Error("not implemented");
-    }
-    setPaletteAttribute(attr: number, color: number) {
-        throw new Error("not implemented");
-    }
-    sleep(delay: number, done) {
-        throw new Error("not implemented");
-    }
-    inkey(): string {
-        throw new Error("not implemented");
-    }
-    inkeyWait(n: number, callback: (result: string) => void) {
-        throw new Error("not implemented");
-    }
-    cls() {
-        throw new Error("not implemented");
-    }
+    line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: LineType, style: number) { throw new Error("not implemented"); }
+    circle(x: number, y: number, radius: number, color: number | undefined) { throw new Error("not implemented"); }
+    paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) { throw new Error("not implemented"); }
+    draw(currentX: number, currentY: number, instructions: DrawInstruction[]) { throw new Error("not implemented"); }
+    pset(x: number, y: number, color?: number) { throw new Error("not implemented"); }
+    point(x: number, y: number): number { throw new Error("not implemented"); }
+    locate(x?: number, y?: number) { throw new Error("not implemented"); }
+    screen() { throw new Error("not implemented"); }
+    resetPalette() { throw new Error("not implemented"); }
+    setPaletteAttribute(attr: number, color: number) { throw new Error("not implemented"); }
+    sleep(delay: number, done) { throw new Error("not implemented"); }
+    inkey(): string { throw new Error("not implemented"); }
+    inkeyWait(n: number, callback: (result: string) => void) { throw new Error("not implemented"); }
+    cls() { throw new Error("not implemented"); }
     clsGraphics() { throw new Error("not implemented"); }
     clsText() { throw new Error("not implemented"); }
-    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
-        return undefined;
-    }
-    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: GraphicsAction) { }
-    screenLines(): number {
-        throw new Error("not implemented");
-    }
-    setViewPrint(top: number, bottom: number) {
-        throw new Error("not implemented");
-    }
+    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined { throw new Error("not implemented"); }
+    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: GraphicsAction) { throw new Error("not implemented"); }
+    screenLines(): number { throw new Error("not implemented"); }
+    setViewPrint(top: number, bottom: number) { throw new Error("not implemented"); }
     setView() { throw new Error("not implemented"); }
-
+    setViewCoordinates() { throw new Error("not implemented"); }
+    mapToScreen(x: number, y: number): [number, number] { throw new Error("not implemented"); }
+    mapFromScreen(x: number, y: number): [number, number] { throw new Error("not implemented"); }
 }
 
 function convertNumber(n: number, baseType: BaseType): number | string {
     switch (baseType) {
-        case BaseType.kString:
-            return "" + n;
-            break;
-        case BaseType.kInt:
-            return toInt(n);
-            break;
-        case BaseType.kLongInt:
-            return toLong(n);
-            break;
-        case BaseType.kSingle:
-            return Math.fround(n);
-            break;
-        case BaseType.kDouble:
-            return n;
-            break;
+        case BaseType.kString: return "" + n;
+        case BaseType.kInt: return toInt(n);
+        case BaseType.kLongInt: return toLong(n);
+        case BaseType.kSingle: return Math.fround(n);
+        case BaseType.kDouble: return n;
     }
     return n;
 }
@@ -416,7 +369,9 @@ export enum InstructionID {
     RESUME_GOTO,
     VIEW, // <screen-bool> S S S S S S
     VIEW_PRINT, // S S
+    WINDOW, // <screen-bool> S S S S
     STRING, // S S
+    PMAP, // S S S
     NOP,
 }
 
@@ -550,6 +505,9 @@ export class VariableValue {
     }
     static newInt(val: number): VariableValue {
         return VariableValue.single(kIntType, val);
+    }
+    static newSingle(val: number): VariableValue {
+        return VariableValue.single(kSingleType, val);
     }
     static newLong(val: number): VariableValue {
         return VariableValue.single(kLongType, val);
@@ -770,7 +728,8 @@ export class Instruction {
             case InstructionID.PUT_GRAPHICS: // S S S ActionVerb
                 if (offset < 3) return "S";
                 return "ActionVerb";
-            case InstructionID.VIEW:
+            case InstructionID.VIEW: // SCREEN S S S S
+            case InstructionID.WINDOW:
                 if (offset === 0) return "screen";
                 return "S";
             case InstructionID.VIEW_PRINT: // S S
@@ -853,6 +812,7 @@ export class Instruction {
             case InstructionID.DEBUGLOG:  // S
             case InstructionID.INPUT_FUNC: // S S
             case InstructionID.LINE_INPUT: // S S S
+            case InstructionID.PMAP: // S S S
             case InstructionID.NOP:
                 if (this.args[offset] !== undefined) {
                     return "S";
@@ -1551,9 +1511,9 @@ ${listing}
                 if (args[2] !== undefined) paintColor = this.read(args[2]).numVal();
                 if (args[3] !== undefined) borderColor = this.read(args[3]).numVal();
 
-                this.vpc.paint(Math.round(x), Math.round(y), paintColor, borderColor);
-                this.lastPointX = Math.round(x);
-                this.lastPointY = Math.round(y);
+                this.vpc.paint(x, y, paintColor, borderColor);
+                this.lastPointX = x;
+                this.lastPointY = y;
                 break;
             }
             case InstructionID.CIRCLE: {
@@ -1586,9 +1546,9 @@ ${listing}
                     aspect = this.read(args[6]).numVal();
                 }
 
-                this.vpc.circle(Math.round(x), Math.round(y), Math.round(r), color, start, end, aspect);
-                this.lastPointX = Math.round(x);
-                this.lastPointY = Math.round(y);
+                this.vpc.circle(x, y, r, color, start, end, aspect);
+                this.lastPointX = x;
+                this.lastPointY = y;
                 break;
             }
             case InstructionID.LINE: {
@@ -1613,9 +1573,9 @@ ${listing}
                 if (args[6] !== undefined) {
                     style = this.read(args[6]).numVal();
                 }
-                this.vpc.line(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), color, type, style);
-                this.lastPointX = Math.round(x2);
-                this.lastPointY = Math.round(y2);
+                this.vpc.line(x1, y1, x2, y2, color, type, style);
+                this.lastPointX = x2;
+                this.lastPointY = y2;
                 break;
             }
             case InstructionID.DRAW: {
@@ -1644,7 +1604,7 @@ ${listing}
                     this.raise("not implemented");
                     break;
                 }
-                const data = this.vpc.getGraphics(Math.round(x1), Math.round(y1), Math.round(x2), Math.round(y2), dims[0] * 2);
+                const data = this.vpc.getGraphics(x1, y1, x2, y2, dims[0] * 2);
                 if (!data) {
                     this.raise("invalid call");
                     break;
@@ -1682,7 +1642,7 @@ ${listing}
                         data[i + 1] = (n >> 8) % 256;
                     }
                 }
-                this.vpc.putGraphics(Math.round(x), Math.round(y), data, actionVerb);
+                this.vpc.putGraphics(x, y, data, actionVerb);
                 break;
             }
             case InstructionID.PSET: {
@@ -1693,22 +1653,22 @@ ${listing}
                     color = this.read(args[2]).numVal();
                     color = Math.round(color as number);
                 }
-                this.vpc.pset(Math.round(x), Math.round(y), color);
-                this.lastPointX = Math.round(x);
-                this.lastPointY = Math.round(y);
+                this.vpc.pset(x, y, color);
+                this.lastPointX = x;
+                this.lastPointY = y;
                 break;
             }
             case InstructionID.PRESET: {
                 const x = this.read(args[0]).numVal();
                 const y = this.read(args[1]).numVal();
-                this.vpc.pset(Math.round(x), Math.round(y), this.vpc.backColor());
-                this.lastPointX = Math.round(x);
-                this.lastPointY = Math.round(y);
+                this.vpc.pset(x, y, this.vpc.backColor());
+                this.lastPointX = x;
+                this.lastPointY = y;
                 break;
             }
             case InstructionID.POINT: {
                 this.save(args[0], VariableValue.newInt(
-                    this.vpc.point(Math.round(this.read(args[1]).numVal()), Math.round(this.read(args[2]).numVal()))));
+                    this.vpc.point(this.read(args[1]).numVal(), this.read(args[2]).numVal())));
                 break;
             }
             case InstructionID.CURRENT_POINT: {
@@ -1931,15 +1891,15 @@ ${listing}
                 const y1 = this.read(args[2]).numVal();
                 const x2 = this.read(args[3]).numVal();
                 const y2 = this.read(args[4]).numVal();
-                const fillColor = this.readValOrUndefined(args[6]);
-                const borderColor = this.readValOrUndefined(args[7]);
+                const fillColor = this.readValOrUndefined(args[5]);
+                const borderColor = this.readValOrUndefined(args[6]);
                 if (borderColor !== undefined) {
                     this.vpc.line(x1 - 1, y1 - 1, x2 + 1, y2 + 1, borderColor.numVal(), LineType.kBox, 0xffff);
                 }
                 if (fillColor !== undefined) {
                     this.vpc.line(x1, y1, x2, y2, fillColor.numVal(), LineType.kFilledBox, 0xffff);
                 }
-                this.vpc.setView(x1, y1, x2, y2, screen);
+                this.vpc.setView(x1, y1, x2, y2, !screen);
                 break;
             }
             case InstructionID.VIEW_PRINT: {
@@ -1953,10 +1913,32 @@ ${listing}
                 this.vpc.setViewPrint(top, bottom);
                 break;
             }
+            case InstructionID.WINDOW: {
+                const screen = args[0] as boolean;
+                const x1 = this.read(args[1]).numVal();
+                const y1 = this.read(args[2]).numVal();
+                const x2 = this.read(args[3]).numVal();
+                const y2 = this.read(args[4]).numVal();
+                this.vpc.setViewCoordinates(x1, y1, x2, y2, screen);
+                break;
+            }
             case InstructionID.STRING: {
                 const times = this.read(args[1]).numVal();
                 const toRepeat = this.read(args[2]).strVal();
                 this.save(args[0], VariableValue.newString(toRepeat.substr(0, 1).repeat(times)));
+                break;
+            }
+            case InstructionID.PMAP: {
+                const value = this.read(args[1]).numVal();
+                const func = this.read(args[2]).numVal();
+                let result = 0;
+                switch (func) {
+                    case 0: result = Math.trunc(this.vpc.mapToScreen(value, 0)[0]); break;
+                    case 1: result = Math.trunc(this.vpc.mapToScreen(0, value)[1]); break;
+                    case 2: result = this.vpc.mapFromScreen(value, 0)[0]; break;
+                    case 3: result = this.vpc.mapFromScreen(0, value)[1]; break;
+                }
+                this.save(args[0], VariableValue.newSingle(result));
                 break;
             }
             case InstructionID.NOP: {

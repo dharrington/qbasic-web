@@ -194,6 +194,7 @@ export interface ICtx {
     // x.field
     indexField(v: Val, idx: Token): MVal;
     dim(name: Token, size: Val[][] | undefined, ty: Type, shared: boolean, dynamic: boolean): void;
+    shared(name: Token, isArray: boolean, sigil: BaseType, ty: Type): void;
     op(name: string, operands: Val[]): MVal;
     sub(id: Token, args: Val[]): ICtx;
     subExit(): void;
@@ -406,7 +407,19 @@ class Parser implements ILocator {
     typename(): Type | undefined {
         const id = this.expectIdent();
         if (!id) return undefined;
-        return this.ctx.typename(id);
+        const ty = this.ctx.typename(id);
+        if (!ty) return;
+        if (ty === kStringType) {
+            if (this.nextIf("*")) {
+                // TODO: Implement fixed length strings
+                if (!this.tok().isNumber()) {
+                    this.error("expected number");
+                    return;
+                }
+                this.next();
+            }
+        }
+        return ty;
     }
 
     typeStmt() { // TYPE ... END TYPE
@@ -537,6 +550,7 @@ class Parser implements ILocator {
             case "TIMER": return this.callBuiltinWithTypes("TIMER", kDoubleType, []);
             case "UCASE$": return this.callBuiltinWithTypes("UCASE", kStringType, [kStringType]);
             case "VAL": return this.callBuiltinWithTypes("VAL", kDoubleType, [kStringType]);
+            case "PMAP": return this.callBuiltinWithTypes("PMAP", kSingleType, [kSingleType, kSingleType]);
         }
         {
             const result = this.maybeCallBuiltin();
@@ -745,7 +759,25 @@ class Parser implements ILocator {
         if (!this.expectOp(")")) return undefined;
         return result;
     }
-
+    sharedStmt() { // SHARED <ident> AS type [, ...]
+        this.expectIdent("SHARED");
+        while (true) {
+            const id = this.expectIdent();
+            const sigil = this.maybeSigil();
+            if (!id) return;
+            const isArray = this.nextIf("(");
+            if (isArray && !this.expectOp(")")) return;
+            const size = this.maybeArraySize();
+            let ty = this.defaultType(id.text, sigil);
+            if (sigil !== undefined && this.nextIf("AS")) {
+                const result = this.typename();
+                if (!result) return;
+                ty = result;
+            }
+            this.ctx.shared(id, isArray !== undefined, sigil, ty);
+            if (!this.nextIf(",")) break;
+        }
+    }
     dimStmt() { // [DIM|REDIM] [SHARED] <ident> [AS <type>]
         const redim = this.nextIf("REDIM");
         if (!redim) this.expectIdent("DIM");
@@ -767,13 +799,21 @@ class Parser implements ILocator {
     }
 
     expr6(): MVal {
+        const unaryNeg = this.nextIf("-");
         if (this.nextIf("(")) {
             const expr = this.expr();
-            if (this.expectOp(")")) return expr;
-            return undefined;
+            if (!expr) return undefined;
+            if (!this.expectOp(")")) return undefined;
+            if (unaryNeg) return this.ctx.op("-", [expr]);
+            return expr;
         }
-        if (this.tok().isIdent("ABS")) return this.abs();
-        const unaryNeg = this.nextIf("-");
+        if (this.tok().isIdent("ABS")) {
+            const result = this.abs();
+            if (!result) return undefined;
+            if (unaryNeg) return this.ctx.op("-", [result]);
+            return result;
+        }
+
         const r = this.maybeFunctionCall() || this.maybeVarname(true) || this.maybeNumberLiteral() || this.maybeStringLiteral();
         if (r) {
             if (unaryNeg) {
@@ -1257,6 +1297,7 @@ class Parser implements ILocator {
         if (!id) { return; }
         const sig = this.maybeSigil();
         const subCtx = this.ctx.functionBegin(id, sig, this.defaultType(id.text, sig), this.declArgs(), false);
+        this.nextIf("STATIC"); // TODO: ignoring STATIC for now
         this.ctx = subCtx;
         this.openBlocks.push(new Block(begin, "FUNCTION"));
     }
@@ -1831,6 +1872,16 @@ class Parser implements ILocator {
         }
         this.ctx.callBuiltin("VIEW", [screen !== undefined, corner1.x, corner1.y, corner2.x, corner2.y, borderColor, border]);
     }
+    windowStmt() {
+        this.expectIdent("WINDOW");
+        const screen = this.nextIf("SCREEN") !== undefined;
+        const c1 = this.coord(false);
+        if (!c1) return;
+        if (!this.expectOp("-")) return;
+        const c2 = this.coord(false);
+        if (!c2) return;
+        this.ctx.callBuiltin("WINDOW", [screen, c1.x, c1.y, c2.x, c2.y]);
+    }
     lineInputStmt() {
         // "LINE INPUT" already consumed
         const initialSemi = this.nextIf(";");
@@ -2123,6 +2174,7 @@ class Parser implements ILocator {
             case "PALETTE":
             case "SLEEP":
             case "REDIM": case "DIM":
+            case "SHARED":
             case "INPUT":
             case "CLS":
             case "CIRCLE":
@@ -2194,6 +2246,7 @@ class Parser implements ILocator {
                 case "PALETTE": this.paletteStmt(); break;
                 case "SLEEP": this.sleepStmt(); break;
                 case "REDIM": case "DIM": this.dimStmt(); break;
+                case "SHARED": this.sharedStmt(); break;
                 case "INPUT": this.inputStmt(); break;
                 case "CLS": this.clsStmt(); break;
                 case "CIRCLE": this.circleStmt(); break;
@@ -2218,6 +2271,7 @@ class Parser implements ILocator {
                 case "CHAIN": this.chainStmt(); break;
                 case "SOUND": this.soundStmt(); break;
                 case "CHDIR": this.chdirStmt(); break;
+                case "WINDOW": this.windowStmt(); break;
                 // TODO:
                 case "OUT":
                 case "KEY": case "CLOSE": case "OPEN": case "PLAY": case "WIDTH": case "POKE": this.eatUntilNewline(); break;
