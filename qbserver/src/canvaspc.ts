@@ -1,5 +1,6 @@
 import * as vm from "../../qb/src/vm";
 import * as chars from "./chars";
+import { eventToInkey } from "./keyboard";
 import { Buffer, ICharmap, ScreenDraw } from "./screen";
 import * as S from "./screen";
 
@@ -7,100 +8,119 @@ export function setup() {
     chars.setup();
 }
 
-class KeyboardMonitor {
-    static charCode(e: KeyboardEvent): number {
-        if (e.key.length === 1) {
-            return e.key.charCodeAt(0);
-        }
-        return 0;
-    }
-    public keysDown = new Set<number>();
-    public shiftKey: number = 0;
-    public controlKey: number = 0;
-    constructor() {
-        const onup = (e) => {
-            const code = KeyboardMonitor.charCode(e);
-            this.keysDown.delete(code);
-        };
-
-        const ondown = (e) => {
-            const code = KeyboardMonitor.charCode(e);
-            this.keysDown.add(code);
-        };
-        window.addEventListener("keyup", onup);
-        window.addEventListener("keydown", ondown);
-
-        this.destroy = () => {
-            window.removeEventListener("keyup", onup);
-            window.removeEventListener("keydown", ondown);
-        };
-    }
-
-    destroy() { }
-
-    activeKey(): number {
-        if (!this.keysDown.size) return 0;
-        let code;
-        for (code of this.keysDown.entries()) { }
-        return code;
-    }
-}
-
-const keyboard = new KeyboardMonitor();
-
 class InputBuffer {
     public input: string = "";
-    public inputChanged?: (text: string, done: boolean) => void;
-    public keyPressed?: (key: string) => void;
+    private inputChanged?: (text: string, done: boolean) => void;
+
+    private inputDone?: (text: string) => void;
+    private inputNumberOfChars: number = 0;
+
+    private keyBuffer: KeyboardEvent[] = [];
+    private inputEnabled: boolean = false;
+    private removeInput: () => void;
+
     constructor() {
-        const onkey = (e: KeyboardEvent) => {
-            if (this.keyPressed) {
-                this.keyPressed(e.key);
-                e.preventDefault();
-                return;
-            }
-            if (e.key.length === 1) {
-                this.input += e.key;
-                if (this.inputChanged) {
-                    this.inputChanged(this.input, false);
-                }
-                e.preventDefault();
-            }
-        };
-        const onkeydown = (e: KeyboardEvent) => {
-            if (this.keyPressed) return;
-            if (e.key === "Backspace" && this.input.length > 0) {
-                this.input = this.input.substr(0, this.input.length - 1);
-                if (this.inputChanged) {
-                    this.inputChanged(this.input, false);
-                }
-                e.preventDefault();
-            }
-            if (e.key === "Enter") {
-                if (this.inputChanged) {
-                    this.inputChanged(this.input, true);
-                } else {
-                    this.input += "\n";
-                }
-                e.preventDefault();
-            }
-        };
-        window.addEventListener("keypress", onkey);
-        window.addEventListener("keydown", onkeydown);
-        this.destroy = () => {
-            window.removeEventListener("keypress", onkey);
-            window.removeEventListener("keydown", onkeydown);
-        };
+        this.setInputEnabled(true);
     }
-    nextKey(): string {
-        if (this.input.length > 0) {
-            const result = this.input.substr(0, 1);
-            this.input = this.input.substr(1);
-            return result;
+
+    public setInputEnabled(enabled: boolean) {
+        if (this.inputEnabled === enabled) return;
+        this.inputEnabled = enabled;
+        if (enabled) {
+            const onkeydown = (e: KeyboardEvent) => {
+                if (this.keyBuffer.length > 10) return;
+                e.preventDefault();
+                if (this.keyBuffer.length > 0 || !this.processEvent(e)) {
+                    this.keyBuffer.push(e);
+                }
+            };
+            window.addEventListener("keydown", onkeydown);
+            this.removeInput = () => {
+                window.removeEventListener("keydown", onkeydown);
+            };
+        } else {
+            this.removeInput();
+            this.removeInput = undefined;
         }
-        return "";
     }
-    destroy() { }
+
+    public inkey(): string {
+        while (true) {
+            const e = this.nextEvent();
+            if (!e) return "";
+            const inkey = eventToInkey(e);
+            if (inkey !== undefined) return inkey;
+        }
+    }
+    public lineInput(onChanged: (text: string, done: boolean) => void) {
+        this.input = "";
+        this.inputChanged = onChanged;
+        this.processEvents();
+    }
+    public inkeyWait(chars: number, done: (result: string) => void) {
+        this.input = "";
+        this.inputDone = done;
+        this.processEvents();
+    }
+    public destroy() {
+        this.setInputEnabled(false);
+    }
+
+    private nextEvent(): KeyboardEvent | undefined {
+        if (!this.keyBuffer.length) return undefined;
+        return this.keyBuffer.shift();
+    }
+    private processInput(e: KeyboardEvent) {
+        const inkey = eventToInkey(e);
+        if (inkey === undefined) return;
+        if (inkey.length === 1) this.input += inkey;
+        else this.input += String.fromCodePoint(0);
+    }
+    private processLineInput(e: KeyboardEvent) {
+        // TODO: Incomplete. Should handle cursor, arrow left,right, insert, delete, even certain control characters.
+        if (e.key.length === 1) {
+            this.input += e.key;
+            this.inputChanged(this.input, false);
+            return;
+        }
+        if (e.key === "Backspace" && this.input.length > 0) {
+            this.input = this.input.substr(0, this.input.length - 1);
+            this.inputChanged(this.input, false);
+            return;
+        }
+        if (e.key === "Enter") {
+            const input = this.input;
+            this.input = "";
+            const cb = this.inputChanged;
+            this.inputChanged = undefined;
+            cb(input, true);
+            return;
+        }
+    }
+    private processEvents() {
+        while (this.keyBuffer.length) {
+            if (!this.inputChanged && !this.inputDone) return;
+            this.processEvent(this.keyBuffer.shift());
+        }
+    }
+    private processEvent(e: KeyboardEvent) {
+        if (this.inputChanged) {
+            this.processLineInput(e);
+            return true;
+        }
+        if (this.inputDone) {
+            this.processInput(e);
+            if (this.input.length >= this.inputNumberOfChars) {
+                const result = this.input;
+                this.input = "";
+                const done = this.inputDone;
+                this.inputDone = undefined;
+                done(result);
+            }
+            return true;
+        }
+        return false;
+    }
 }
 
 // State of a screen buffer. This includes pixels and color state.
@@ -151,6 +171,9 @@ export class CanvasPC implements vm.IVirtualPC {
         this.charmap = chars.get8x16();
         this.charHeight = this.charmap.height;
         window.setInterval(() => this.refresh(), 100);
+    }
+    setInputEnabled(enabled: boolean) {
+        this.inputBuffer.setInputEnabled(enabled);
     }
     destroy() {
         this.inputBuffer.destroy();
@@ -207,8 +230,8 @@ export class CanvasPC implements vm.IVirtualPC {
         }
         this.graphicsViewport = this.s.buffer.fullViewport.copy();
         this.textViewport = this.s.buffer.fullViewport.copy();
-        this.abuf().printViewTop = 1;
-        this.abuf().printViewBottom = this.rows;
+        this.abuf().printViewTop = 0;
+        this.abuf().printViewBottom = this.rows - 1;
     }
     cursor(show: boolean) { }
     locate(y?: number, x?: number) {
@@ -230,7 +253,7 @@ export class CanvasPC implements vm.IVirtualPC {
                     buf.x = 0;
                     this.newline();
                 }
-            } else if (c === "\n") {
+            } else if (c === "\n" || c === "\r") {
                 this.newline();
             } else {
                 const ch = c.charCodeAt(0);
@@ -256,28 +279,13 @@ export class CanvasPC implements vm.IVirtualPC {
             }
             this.print(text);
             prevText = text;
-            if (done) {
-                this.inputBuffer.inputChanged = undefined;
-                this.inputBuffer.input = "";
-                completed(text);
-            }
+            if (done) completed(text);
         };
-        this.inputBuffer.inputChanged = updatefn;
-        updatefn(this.inputBuffer.input, false);
+        this.inputBuffer.lineInput(updatefn);
     }
 
     inkeyWait(n: number, callback: (result: string) => void) {
-        let result = "";
-        let count = 0;
-        const updatefn = (text: string) => {
-            result += text;
-            count++;
-            if (count === n) {
-                this.inputBuffer.keyPressed = undefined;
-                callback(result);
-            }
-        };
-        this.inputBuffer.keyPressed = updatefn;
+        this.inputBuffer.inkeyWait(n, callback);
     }
 
     setForeColor(fc: number) {
@@ -307,7 +315,7 @@ export class CanvasPC implements vm.IVirtualPC {
         this.dirty = true;
     }
     inkey(): string {
-        return this.inputBuffer.nextKey();
+        return this.inputBuffer.inkey();
     }
     pset(x: number, y: number, color?: number) {
         const buf = this.abuf();

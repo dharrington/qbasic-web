@@ -2211,8 +2211,8 @@ class Parser implements ILocator {
             const moduleLevel = this.isModuleLevel();
 
             if (this.isEnd && moduleLevel) {
-                if (this.tok().utext() !== "SUB" && this.tok().utext() !== "FUNCTION") {
-                    this.error("expected SUB, FUNCTION, or EOF");
+                if (["SUB", "FUNCTION", "DEFINE", "DEFINT", "DEFSTR", "DEFSNG", "DEFLNG", "DEFDBL"].indexOf(this.tok().utext()) < 0) {
+                    this.error("expected DEFINE, SUB, FUNCTION, or EOF");
                     return false;
                 }
             }

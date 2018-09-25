@@ -20,6 +20,8 @@ REM output
 Integer
 Double
 This is a line of input 123  123.456 
-Line: This is a line
+Line: 
+This is a line
 Line 2: This is another line
+
 Last line

@@ -156,6 +156,7 @@ export function start() {
     app.exe.onEnd = () => {
         document.getElementById("program_running").classList.add("hidden");
         document.getElementById("program_complete").classList.remove("hidden");
+        app.pc.setInputEnabled(false);
     };
     app.exe.onException = (error: string, lineNo: number | undefined) => {
         document.getElementById("program_running").classList.add("hidden");

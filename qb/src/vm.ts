@@ -1362,18 +1362,18 @@ ${listing}
                 break;
             }
             case InstructionID.LINE_INPUT: {
-                const sameLine = this.readValOrUndefined(args[0]);
+                const sameLine = this.read(args[0]).numVal();
                 const prompt = this.readValOrUndefined(args[1]);
                 const inputReady = (text: string) => {
                     this.waiting = false;
-                    if (sameLine !== undefined && sameLine) {
-                    } else {
+                    if (sameLine !== 1) {
                         this.vpc.print("\n");
                     }
                     this.save(args[2], VariableValue.newString(text));
                     this.unpause();
                 };
                 if (prompt) this.vpc.print(prompt.strVal());
+                this.waiting = true;
                 this.vpc.input(inputReady);
                 break;
             }

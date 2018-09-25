@@ -1339,6 +1339,7 @@ export class CodegenCtx implements ICtx {
     }
     onErrorGoto(target: number | string, tok: Token) {
         const g = new GotoInfo(this.blockInfo, this.emit(vm.InstructionID.ON_ERROR_GOTO, 0));
+        g.globalLabel = true;
         if (typeof target === 'string') {
             g.label = target;
         } else {
@@ -1699,7 +1700,7 @@ export class CodegenCtx implements ICtx {
                     }
                 } else {
                     if (target.block !== g.sourceBlock) {
-                        this.error("label not in this block"), g.token;
+                        this.error("label not in this block", g.token);
                     }
                 }
             } else if (g.lineNumber !== undefined) {
