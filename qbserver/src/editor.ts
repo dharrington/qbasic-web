@@ -50,6 +50,7 @@ export function Init(element: HTMLTextAreaElement) {
         gutters: ["CodeMirror-lint-markers"],
         viewportMargin: Infinity,
         lint: true,
+        lineNumbers: true,
     });
 }
 

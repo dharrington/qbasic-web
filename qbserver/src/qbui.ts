@@ -135,10 +135,9 @@ export function start() {
     parse.parse(ctx, tokens);
 
     if (ctx.errors().length > 0) {
-        console.log(`Compile errors:`);
-        for (const e of ctx.errors()) {
-            console.log(`  ${e}`);
-        }
+        const errors = ctx.errors();
+        Editor.setCursorPosition(ctx.errorLocations()[0].line);
+        window.alert("Program has errors: " + errors[0]);
         return false;
     }
     document.getElementById("program_running").classList.remove("hidden");
