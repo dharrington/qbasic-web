@@ -51,7 +51,7 @@ export class GLScreenDraw {
     private shaderProgram: WebGLShader;
     private gl: WebGLRenderingContext;
     private dtors: any[] = [];
-    constructor(private canvas: HTMLCanvasElement) { //, public width: number, public height: number) {
+    constructor(private canvas: HTMLCanvasElement) {
         const gl = this.canvas.getContext("webgl");
         if (!gl) {
             window.alert("Can't get WebGL context");
