@@ -1,126 +1,20 @@
 import * as vm from "../../qb/src/vm";
 import * as chars from "./chars";
-import { eventToInkey } from "./keyboard";
-import { Buffer, ICharmap, ScreenDraw } from "./screen";
+import { eventToInkey, InputBuffer } from "./keyboard";
+import { Buffer, ICharmap, Palette } from "./screen";
+import { GLScreenDraw } from "./gldraw";
 import * as S from "./screen";
 
 export function setup() {
     chars.setup();
 }
 
-class InputBuffer {
-    public input: string = "";
-    private inputChanged?: (text: string, done: boolean) => void;
-
-    private inputDone?: (text: string) => void;
-    private inputNumberOfChars: number = 0;
-
-    private keyBuffer: KeyboardEvent[] = [];
-    private inputEnabled: boolean = false;
-    private removeInput: () => void;
-
-    constructor() {
-        this.setInputEnabled(true);
-    }
-
-    public setInputEnabled(enabled: boolean) {
-        if (this.inputEnabled === enabled) return;
-        this.inputEnabled = enabled;
-        if (enabled) {
-            const onkeydown = (e: KeyboardEvent) => {
-                if (this.keyBuffer.length > 10) return;
-                e.preventDefault();
-                if (this.keyBuffer.length > 0 || !this.processEvent(e)) {
-                    this.keyBuffer.push(e);
-                }
-            };
-            window.addEventListener("keydown", onkeydown);
-            this.removeInput = () => {
-                window.removeEventListener("keydown", onkeydown);
-            };
-        } else {
-            this.removeInput();
-            this.removeInput = undefined;
-        }
-    }
-
-    public inkey(): string {
-        while (true) {
-            const e = this.nextEvent();
-            if (!e) return "";
-            const inkey = eventToInkey(e);
-            if (inkey !== undefined) return inkey;
-        }
-    }
-    public lineInput(onChanged: (text: string, done: boolean) => void) {
-        this.input = "";
-        this.inputChanged = onChanged;
-        this.processEvents();
-    }
-    public inkeyWait(chars: number, done: (result: string) => void) {
-        this.input = "";
-        this.inputDone = done;
-        this.processEvents();
-    }
-    public destroy() {
-        this.setInputEnabled(false);
-    }
-
-    private nextEvent(): KeyboardEvent | undefined {
-        if (!this.keyBuffer.length) return undefined;
-        return this.keyBuffer.shift();
-    }
-    private processInput(e: KeyboardEvent) {
-        const inkey = eventToInkey(e);
-        if (inkey === undefined) return;
-        if (inkey.length === 1) this.input += inkey;
-        else this.input += String.fromCodePoint(0);
-    }
-    private processLineInput(e: KeyboardEvent) {
-        // TODO: Incomplete. Should handle cursor, arrow left,right, insert, delete, even certain control characters.
-        if (e.key.length === 1) {
-            this.input += e.key;
-            this.inputChanged(this.input, false);
-            return;
-        }
-        if (e.key === "Backspace" && this.input.length > 0) {
-            this.input = this.input.substr(0, this.input.length - 1);
-            this.inputChanged(this.input, false);
-            return;
-        }
-        if (e.key === "Enter") {
-            const input = this.input;
-            this.input = "";
-            const cb = this.inputChanged;
-            this.inputChanged = undefined;
-            cb(input, true);
-            return;
-        }
-    }
-    private processEvents() {
-        while (this.keyBuffer.length) {
-            if (!this.inputChanged && !this.inputDone) return;
-            this.processEvent(this.keyBuffer.shift());
-        }
-    }
-    private processEvent(e: KeyboardEvent) {
-        if (this.inputChanged) {
-            this.processLineInput(e);
-            return true;
-        }
-        if (this.inputDone) {
-            this.processInput(e);
-            if (this.input.length >= this.inputNumberOfChars) {
-                const result = this.input;
-                this.input = "";
-                const done = this.inputDone;
-                this.inputDone = undefined;
-                done(result);
-            }
-            return true;
-        }
-        return false;
-    }
+export interface IInputBuffer {
+    setInputEnabled(enabled: boolean);
+    inkey(): string;
+    lineInput(onChanged: (text: string, done: boolean) => void);
+    inkeyWait(chars: number, done: (result: string) => void);
+    destroy();
 }
 
 // State of a screen buffer. This includes pixels and color state.
@@ -146,9 +40,11 @@ export class CanvasPC implements vm.IVirtualPC {
     private rows: number;
     private cols: number;
 
-    private s: ScreenDraw | undefined;
+    private screenDraw: GLScreenDraw | undefined;
     private screenBuffers: BufferState[];
     private activeBufferIndex: number = 0;
+    private displayedBufferIndex: number = 0;
+    private pal = new Palette();
 
     private viewCoordinateBox?: [number, number, number, number] = undefined;
     private viewCoordinateInverted = false;
@@ -198,8 +94,8 @@ export class CanvasPC implements vm.IVirtualPC {
                 [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
             }
         }
-        if (!this.dirty || !this.s) return;
-        this.s.draw();
+        if (!this.dirty || !this.screenDraw) return;
+        this.screenDraw.draw(this.vbuf().buffer, this.pal);
         this.dirty = false;
     }
     newline() {
@@ -215,21 +111,22 @@ export class CanvasPC implements vm.IVirtualPC {
         this.rows = Math.trunc(h / charHeight);
         if (this.canvas) {
             this.canvas.remove();
-            this.s.free();
-            this.s = undefined;
+            this.screenDraw.destroy();
+            this.screenDraw = undefined;
             this.canvas = undefined;
         }
         this.canvas = document.createElement("canvas");
         [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
         this.canvasHolder.appendChild(this.canvas);
-        this.s = new ScreenDraw(this.canvas, this.width, this.height);
-        this.screenBuffers = [new BufferState(this.s.buffer)];
+        this.screenDraw = new GLScreenDraw(this.canvas);
         this.activeBufferIndex = 0;
-        for (let i = 1; i < bufferCount; i++) {
-            this.screenBuffers.push(new BufferState(new Buffer(this.s.buffer.width, this.s.buffer.height)));
+        this.displayedBufferIndex = 0;
+        this.screenBuffers = [];
+        for (let i = 0; i < bufferCount; i++) {
+            this.screenBuffers.push(new BufferState(new Buffer(this.width, this.height)));
         }
-        this.graphicsViewport = this.s.buffer.fullViewport.copy();
-        this.textViewport = this.s.buffer.fullViewport.copy();
+        this.graphicsViewport = this.abuf().buffer.fullViewport.copy();
+        this.textViewport = this.abuf().buffer.fullViewport.copy();
         this.abuf().printViewTop = 0;
         this.abuf().printViewBottom = this.rows - 1;
     }
@@ -301,17 +198,17 @@ export class CanvasPC implements vm.IVirtualPC {
     foreColor(): number { return this.abuf().fgcolor; }
     backColor(): number { return this.abuf().bgcolor; }
     resetPalette() {
-        if (!this.s) return;
+        if (!this.screenDraw) return;
         const pal = S.kScreenPalettes.get(this.currentScreen);
         if (pal) {
-            this.s.setPalette(pal);
+            this.pal.setPalette(pal);
             this.dirty = true;
         }
     }
     setPaletteAttribute(attr: number, color: number) {
-        if (!this.s) return;
+        if (!this.screenDraw) return;
         const rgb = [color % 256, Math.trunc(color / 256) % 256, Math.trunc(color / 65536) % 256];
-        this.s.setPaletteEntry(attr, rgb);
+        this.pal.setPaletteEntry(attr, rgb);
         this.dirty = true;
     }
     inkey(): string {
@@ -337,9 +234,10 @@ export class CanvasPC implements vm.IVirtualPC {
         this.abuf().printViewBottom = bottom - 1;
     }
     setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
-        if (!this.s) return;
-        [this.graphicsViewport.left, this.graphicsViewport.top] = this.s.buffer.fullViewport.clamp(Math.min(x1, x2), Math.min(y1, y2));
-        [this.graphicsViewport.right, this.graphicsViewport.bottom] = this.s.buffer.fullViewport.clamp(Math.max(x1, x2), Math.max(y1, y2));
+        if (!this.screenDraw) return;
+        const buf = this.abuf().buffer;
+        [this.graphicsViewport.left, this.graphicsViewport.top] = buf.fullViewport.clamp(Math.min(x1, x2), Math.min(y1, y2));
+        [this.graphicsViewport.right, this.graphicsViewport.bottom] = buf.fullViewport.clamp(Math.max(x1, x2), Math.max(y1, y2));
         this.relativeViewport = relative;
         this.updateViewTransform();
     }
@@ -585,17 +483,17 @@ export class CanvasPC implements vm.IVirtualPC {
             }
             if (id !== this.currentScreen) {
                 this.setDims(w, h, this.charmap.width, this.charmap.height, bufferCount);
-                if (!this.s) return;
-                this.s.setPalette(S.kScreenPalettes.get(id) as any);
+                if (!this.screenDraw) return;
+                this.pal.setPalette(S.kScreenPalettes.get(id) as any);
                 this.currentScreen = id;
             }
         }
-        if (!this.s) return;
+        if (!this.screenDraw) return;
         if (apage !== undefined && apage >= 0 && apage < this.screenBuffers.length) {
             this.activeBufferIndex = apage;
         }
         if (vpage !== undefined && vpage >= 0 && vpage < this.screenBuffers.length) {
-            this.s.buffer = this.screenBuffers[vpage].buffer;
+            this.displayedBufferIndex = vpage;
             this.dirty = true;
         }
         // TODO: colorswitch
@@ -681,5 +579,8 @@ export class CanvasPC implements vm.IVirtualPC {
 
     private abuf(): BufferState {
         return this.screenBuffers[this.activeBufferIndex];
+    }
+    private vbuf(): BufferState {
+        return this.screenBuffers[this.displayedBufferIndex];
     }
 }

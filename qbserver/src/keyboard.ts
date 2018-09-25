@@ -1,4 +1,5 @@
 // From https://qb64.org/wiki/Keyboard_scancodes
+import { IInputBuffer } from "./canvaspc";
 
 export function eventToInkey(event: KeyboardEvent): string | undefined {
     const code = event.which;
@@ -30,4 +31,119 @@ export function eventToInkey(event: KeyboardEvent): string | undefined {
     }
     if (event.key.length === 1) return event.key;
     return undefined;
+}
+
+export class InputBuffer implements IInputBuffer {
+    public input: string = "";
+    private inputChanged?: (text: string, done: boolean) => void;
+
+    private inputDone?: (text: string) => void;
+    private inputNumberOfChars: number = 0;
+
+    private keyBuffer: KeyboardEvent[] = [];
+    private inputEnabled: boolean = false;
+    private removeInput: () => void;
+
+    constructor() {
+        this.setInputEnabled(true);
+    }
+
+    public setInputEnabled(enabled: boolean) {
+        if (this.inputEnabled === enabled) return;
+        this.inputEnabled = enabled;
+        if (enabled) {
+            const onkeydown = (e: KeyboardEvent) => {
+                if (this.keyBuffer.length > 10) return;
+                e.preventDefault();
+                if (this.keyBuffer.length > 0 || !this.processEvent(e)) {
+                    this.keyBuffer.push(e);
+                }
+            };
+            window.addEventListener("keydown", onkeydown);
+            this.removeInput = () => {
+                window.removeEventListener("keydown", onkeydown);
+            };
+        } else {
+            this.removeInput();
+            this.removeInput = undefined;
+        }
+    }
+
+    public inkey(): string {
+        while (true) {
+            const e = this.nextEvent();
+            if (!e) return "";
+            const inkey = eventToInkey(e);
+            if (inkey !== undefined) return inkey;
+        }
+    }
+    public lineInput(onChanged: (text: string, done: boolean) => void) {
+        this.input = "";
+        this.inputChanged = onChanged;
+        this.processEvents();
+    }
+    public inkeyWait(chars: number, done: (result: string) => void) {
+        this.input = "";
+        this.inputDone = done;
+        this.processEvents();
+    }
+    public destroy() {
+        this.setInputEnabled(false);
+    }
+
+    private nextEvent(): KeyboardEvent | undefined {
+        if (!this.keyBuffer.length) return undefined;
+        return this.keyBuffer.shift();
+    }
+    private processInput(e: KeyboardEvent) {
+        const inkey = eventToInkey(e);
+        if (inkey === undefined) return;
+        if (inkey.length === 1) this.input += inkey;
+        else this.input += String.fromCodePoint(0);
+    }
+    private processLineInput(e: KeyboardEvent) {
+        // TODO: Incomplete. Should handle cursor, arrow left,right, insert, delete, even certain control characters.
+        if (e.key.length === 1) {
+            this.input += e.key;
+            this.inputChanged(this.input, false);
+            return;
+        }
+        if (e.key === "Backspace" && this.input.length > 0) {
+            this.input = this.input.substr(0, this.input.length - 1);
+            this.inputChanged(this.input, false);
+            return;
+        }
+        if (e.key === "Enter") {
+            const input = this.input;
+            this.input = "";
+            const cb = this.inputChanged;
+            this.inputChanged = undefined;
+            cb(input, true);
+            return;
+        }
+    }
+    private processEvents() {
+        while (this.keyBuffer.length) {
+            if (!this.inputChanged && !this.inputDone) return;
+            this.processEvent(this.keyBuffer.shift());
+        }
+    }
+    private processEvent(e: KeyboardEvent) {
+        if (this.inputChanged) {
+            this.processLineInput(e);
+            return true;
+        }
+        if (this.inputDone) {
+            this.processInput(e);
+            if (this.input.length >= this.inputNumberOfChars) {
+                const result = this.input;
+                this.input = "";
+                const done = this.inputDone;
+                this.inputDone = undefined;
+                done(result);
+            }
+            return true;
+        }
+        return false;
+    }
 }
