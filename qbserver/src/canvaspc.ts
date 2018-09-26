@@ -42,19 +42,18 @@ class BufferState {
     constructor(public buffer: Buffer) { }
 }
 
-// The primary VirtualPC implementation. It draws to a canvas.
-export class CanvasPC implements vm.IVirtualPC {
+// The primary VirtualPC implementation.
+export class BasicPC implements vm.IVirtualPC {
     public textOutput: string = "";
     private graphicsViewport: S.Viewport;
     // If true, graphics calls are relative to the graphics viewport top-left corner.
     private relativeViewport = false;
     private textViewport: S.Viewport;
-    private width: number;
-    private height: number;
+    protected width: number;
+    protected height: number;
     private rows: number;
     private cols: number;
 
-    private screenDraw: GLScreenDraw | undefined;
     private screenBuffers: BufferState[];
     private activeBufferIndex: number = 0;
     private displayedBufferIndex: number = 0;
@@ -69,49 +68,28 @@ export class CanvasPC implements vm.IVirtualPC {
     private viewScalingY = 1;
 
     private charmap: ICharmap;
-    private dirty = true;
+    protected dirty = true;
     private currentScreen: number = 0;
-    private canvas: HTMLCanvasElement;
+
     private inputBuffer = new InputBuffer();
     private charHeight: number;
 
-    constructor(private canvasHolder: HTMLElement) {
+    constructor() { }
+
+    init() {
         this.currentScreen = -1;
         this.screen(0, undefined, undefined, undefined);
         this.charmap = chars.get8x16();
         this.charHeight = this.charmap.height;
-        window.setInterval(() => this.refresh(), 100);
     }
+
     setInputEnabled(enabled: boolean) {
         this.inputBuffer.setInputEnabled(enabled);
     }
     destroy() {
         this.inputBuffer.destroy();
-        if (this.canvas) this.canvas.remove();
     }
-    bestCanvasSize(): number[] {
-        // Output is ugly if it's not a multiple. TODO: Do filtering in shader to fix this.
-        const pw = this.canvasHolder.offsetWidth;
-        const w = this.width;
-        let mult = 1;
-        for (let m = 2; m < 10; m++) {
-            if (w * m <= pw) {
-                mult = m;
-            }
-        }
-        return [mult * w, mult * this.height];
-    }
-    refresh() {
-        if (this.canvas) {
-            const [w, h] = this.bestCanvasSize();
-            if (w !== this.canvas.width || h !== this.canvas.height) {
-                [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
-            }
-        }
-        if (!this.dirty || !this.screenDraw) return;
-        this.screenDraw.draw(this.vbuf().buffer, this.pal);
-        this.dirty = false;
-    }
+
     newline() {
         this.abuf().x = 0;
         this.abuf().y += 1;
@@ -123,16 +101,7 @@ export class CanvasPC implements vm.IVirtualPC {
         this.height = h;
         this.cols = Math.trunc(w / charWidth);
         this.rows = Math.trunc(h / charHeight);
-        if (this.canvas) {
-            this.canvas.remove();
-            this.screenDraw.destroy();
-            this.screenDraw = undefined;
-            this.canvas = undefined;
-        }
-        this.canvas = document.createElement("canvas");
-        [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
-        this.canvasHolder.appendChild(this.canvas);
-        this.screenDraw = new GLScreenDraw(this.canvas);
+
         this.activeBufferIndex = 0;
         this.displayedBufferIndex = 0;
         this.screenBuffers = [];
@@ -143,7 +112,11 @@ export class CanvasPC implements vm.IVirtualPC {
         this.textViewport = this.abuf().buffer.fullViewport.copy();
         this.abuf().printViewTop = 0;
         this.abuf().printViewBottom = this.rows - 1;
+        this.dimsChanged();
     }
+
+    dimsChanged() { }
+
     cursor(show: boolean) { }
     locate(y?: number, x?: number) {
         const buf = this.abuf();
@@ -212,7 +185,6 @@ export class CanvasPC implements vm.IVirtualPC {
     foreColor(): number { return this.abuf().fgcolor; }
     backColor(): number { return this.abuf().bgcolor; }
     resetPalette() {
-        if (!this.screenDraw) return;
         const pal = S.kScreenPalettes.get(this.currentScreen);
         if (pal) {
             this.pal.setPalette(pal);
@@ -220,7 +192,6 @@ export class CanvasPC implements vm.IVirtualPC {
         }
     }
     setPaletteAttribute(attr: number, color: number) {
-        if (!this.screenDraw) return;
         const rgb = [color % 256, Math.trunc(color / 256) % 256, Math.trunc(color / 65536) % 256];
         this.pal.setPaletteEntry(attr, rgb);
         this.dirty = true;
@@ -248,7 +219,6 @@ export class CanvasPC implements vm.IVirtualPC {
         this.abuf().printViewBottom = bottom - 1;
     }
     setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
-        if (!this.screenDraw) return;
         const buf = this.abuf().buffer;
         [this.graphicsViewport.left, this.graphicsViewport.top] = buf.fullViewport.clamp(Math.min(x1, x2), Math.min(y1, y2));
         [this.graphicsViewport.right, this.graphicsViewport.bottom] = buf.fullViewport.clamp(Math.max(x1, x2), Math.max(y1, y2));
@@ -497,12 +467,10 @@ export class CanvasPC implements vm.IVirtualPC {
             }
             if (id !== this.currentScreen) {
                 this.setDims(w, h, this.charmap.width, this.charmap.height, bufferCount);
-                if (!this.screenDraw) return;
                 this.pal.setPalette(S.kScreenPalettes.get(id) as any);
                 this.currentScreen = id;
             }
         }
-        if (!this.screenDraw) return;
         if (apage !== undefined && apage >= 0 && apage < this.screenBuffers.length) {
             this.activeBufferIndex = apage;
         }
@@ -556,6 +524,8 @@ export class CanvasPC implements vm.IVirtualPC {
         return [(x - this.viewTranslateX) / this.viewScalingX, (y - this.viewTranslateY) / this.viewScalingY];
     }
 
+    palette(): Palette { return this.pal; }
+
     private updateViewTransform() {
         const [x1, y1, x2, y2] = this.viewCoordinateBox ? this.viewCoordinateBox : [0, 0, this.width, this.height];
         let viewWidth;
@@ -594,7 +564,60 @@ export class CanvasPC implements vm.IVirtualPC {
     private abuf(): BufferState {
         return this.screenBuffers[this.activeBufferIndex];
     }
-    private vbuf(): BufferState {
+    vbuf(): BufferState {
         return this.screenBuffers[this.displayedBufferIndex];
+    }
+}
+
+export class CanvasPC extends BasicPC {
+    private canvas: HTMLCanvasElement;
+    private screenDraw: GLScreenDraw | undefined;
+
+    constructor(private canvasHolder: HTMLElement) {
+        super();
+        window.setInterval(() => this.refresh(), 100);
+    }
+
+    destroy() {
+        super.destroy();
+        if (this.canvas) this.canvas.remove();
+    }
+
+    dimsChanged() {
+        if (this.canvas) {
+            this.canvas.remove();
+            this.screenDraw.destroy();
+            this.screenDraw = undefined;
+            this.canvas = undefined;
+        }
+
+        this.canvas = document.createElement("canvas");
+        [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
+        this.canvasHolder.appendChild(this.canvas);
+        this.screenDraw = new GLScreenDraw(this.canvas);
+    }
+
+    private bestCanvasSize(): number[] {
+        // Output is ugly if it's not a multiple. TODO: Do filtering in shader to fix this.
+        const pw = this.canvasHolder.offsetWidth;
+        const w = this.width;
+        let mult = 1;
+        for (let m = 2; m < 10; m++) {
+            if (w * m <= pw) {
+                mult = m;
+            }
+        }
+        return [mult * w, mult * this.height];
+    }
+    private refresh() {
+        if (this.canvas) {
+            const [w, h] = this.bestCanvasSize();
+            if (w !== this.canvas.width || h !== this.canvas.height) {
+                [this.canvas.width, this.canvas.height] = this.bestCanvasSize();
+            }
+        }
+        if (!this.dirty || !this.screenDraw) return;
+        this.screenDraw.draw(this.vbuf().buffer, this.palette());
+        this.dirty = false;
     }
 }

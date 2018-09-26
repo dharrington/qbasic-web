@@ -163,6 +163,7 @@ export function start() {
         app.pc.destroy();
     }
     const pc = new canvaspc.CanvasPC(document.getElementById("canvasholder"));
+    pc.init();
     app.pc = pc;
     ctx.program().source = programText; // for debugging.
     app.exe = new vm.Execution(ctx.program(), pc);
