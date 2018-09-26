@@ -1,0 +1,9 @@
+TYPE Config
+   Scrn     AS INTEGER
+END TYPE
+
+DIM VC AS Config
+
+FUNCTION Inside (T AS Tile) STATIC
+  SHARED VC AS Config
+END FUNCTION

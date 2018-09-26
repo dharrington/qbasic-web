@@ -18,7 +18,6 @@ import * as types from "../types";
 import * as vm from "../vm";
 import { DebugPC } from "./debugpc";
 
-import { AssertionError } from "assert";
 import * as fs from "fs";
 import * as path from "path";
 

@@ -14,7 +14,6 @@
 
 // vm.ts implements the virtual machine that runs programs.
 
-import { AssertionError } from "assert";
 import { BaseType, baseTypeToSigil, kDoubleType, kIntType, kLongType, kSingleType, kStringType, Type } from "./types";
 
 export const kGlobalBit = 0x80000000;
@@ -31,6 +30,12 @@ export enum LineType {
 }
 export enum GraphicsAction {
     kPset, kPreset, kAnd, kOr, kXor,
+}
+
+class AssertionError extends Error {
+    constructor(message: string) {
+        super(message);
+    }
 }
 
 // The virtual computer on which the VM executes.
@@ -109,9 +114,9 @@ export class DrawInstruction {
                 case 6: return rotateScaleAdd(-b, 0);
                 case 7: return rotateScaleAdd(-b, -b);
             }
-            throw new AssertionError({ message: "invalid draw instruction" });
+            throw new AssertionError("invalid draw instruction");
         }
-        throw new AssertionError();
+        throw new AssertionError("not implemented");
     }
 }
 function parseDrawCommand(cmd: string): DrawInstruction[] | undefined {
@@ -1827,11 +1832,11 @@ ${listing}
                 break;
             }
             case InstructionID.LTRIM: {
-                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().trimLeft()));
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().replace(/^\s*/, '')));
                 break;
             }
             case InstructionID.RTRIM: {
-                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().trimRight()));
+                this.save(args[0], VariableValue.newString(this.read(args[1]).strVal().replace(/\s*$/, '')));
                 break;
             }
             case InstructionID.UCASE: {
