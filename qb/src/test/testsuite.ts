@@ -14,7 +14,6 @@
 import * as codegen from "../codegen";
 import { lex } from "../lex";
 import { parse } from "../parse";
-import * as types from "../types";
 import * as vm from "../vm";
 import { DebugPC } from "./debugpc";
 

@@ -42,7 +42,6 @@ export class AppState {
             this.hashChanged();
             this.newProgram();
         };
-        canvaspc.setup();
     }
     hashChanged() {
         const id = window.location.hash.substr(1);

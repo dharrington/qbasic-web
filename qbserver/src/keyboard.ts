@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { IInputBuffer } from "./canvaspc";
+import { IInputBuffer } from "../../qb/src/basicpc";
 
 export function eventToInkey(event: KeyboardEvent): string | undefined {
     const code = event.which;

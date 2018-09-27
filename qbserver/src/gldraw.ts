@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import { Buffer, Palette } from "./screen";
+import { Buffer, Palette } from "../../qb/src/screen";
 
 // Vertex shader program
 const vsSource = `
