@@ -40,11 +40,24 @@ function scanREMs(programText: string, command: string): string[] {
     }
     return all;
 }
+
+function firstMismatchedLine(got: string, want: string): number | undefined {
+    const gotLines = got.split('\n');
+    const wantLines = want.split('\n');
+    for (let i = 0; i < wantLines.length; i++) {
+        if (gotLines.length <= i) return i;
+        if (wantLines[i].trim() === gotLines[i].trim()) continue;
+        return i + 1;
+    }
+    return undefined;
+}
+
 function testProgram(programPath: string) {
     console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
     const pc = new DebugPC();
+    pc.init();
     const exp = new Expectation();
     {
         const ex = scanREMs(fileText, "exception");
@@ -53,7 +66,9 @@ function testProgram(programPath: string) {
         }
     }
     exp.graphics = scanREMs(fileText, "graphics");
-    pc.inputResult = scanREMs(fileText, "input");
+    for (const inputLine of scanREMs(fileText, "input")) {
+        pc.debugInput.addLine(inputLine);
+    }
     const fileLines = fileText.split("\n");
     for (let i = 0; i < fileLines.length; i++) {
         if (/'COMPILE_ERROR/.test(fileLines[i])) {
@@ -147,9 +162,12 @@ function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
     if (!failed && !exe.exception && !exe.done) {
         console.log(`Program not complete, is there an infinite loop?`);
         failed = true;
-    } else if (exp.output !== undefined && exp.output.trimRight() !== pc.textOutput) {
-        console.log(`Program complete with incorrect output`);
-        failed = true;
+    } else if (exp.output !== undefined) {
+        const mismatch = firstMismatchedLine(pc.textOutput, exp.output.trimRight());
+        if (mismatch !== undefined) {
+            console.log(`Program complete with incorrect output at line ${mismatch}`);
+            failed = true;
+        }
     }
     if (!failed && exp.graphics.length) {
         const got = pc.graphicCalls.join("\n");

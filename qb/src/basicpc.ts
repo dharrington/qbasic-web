@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-import * as vm from "../../qb/src/vm";
+import * as vm from "./vm";
 import * as chars from "./chars";
 import { Buffer, ICharmap, Palette, Viewport } from "./screen";
 import * as S from "./screen";
@@ -118,31 +118,9 @@ export class BasicPC implements vm.IVirtualPC {
     }
 
     print(str: string) {
-        const buf = this.abuf();
-        this.cursor(false);
-        for (const c of str) {
-            if (buf.y >= buf.printViewBottom) {
-                this.scroll();
-            }
-            if (c === "\t") {
-                buf.x = Math.floor((buf.x + 14) / 14) * 14;
-                if (buf.x >= this.cols) {
-                    buf.x = 0;
-                    this.newline();
-                }
-            } else if (c === "\n" || c === "\r") {
-                this.newline();
-            } else {
-                const ch = c.charCodeAt(0);
-                buf.buffer.drawChar(buf.x, buf.y, ch, buf.fgcolor, buf.bgcolor, this.charmap, this.textViewport);
-                this.dirty = true;
-                buf.x += 1;
-                if (buf.x === this.cols) {
-                    this.newline();
-                }
-            }
-        }
+        this.drawChars(str);
     }
+
 
     input(completed: (text: string) => void) {
         const inputx = this.abuf().x;
@@ -154,7 +132,7 @@ export class BasicPC implements vm.IVirtualPC {
             while (prevText && prevText.length > text.length) {
                 text += " "; // make backspace clear text.
             }
-            this.print(text);
+            this.drawChars(text);
             prevText = text;
             if (done) completed(text);
         };
@@ -474,7 +452,7 @@ export class BasicPC implements vm.IVirtualPC {
         // TODO: colorswitch
     }
     sleep(delay: number, done) {
-        window.setTimeout(() => {
+        setTimeout(() => {
             done();
         }, delay * 1000.0);
     }
@@ -518,6 +496,33 @@ export class BasicPC implements vm.IVirtualPC {
     }
 
     palette(): Palette { return this.pal; }
+
+    private drawChars(str: string) {
+        const buf = this.abuf();
+        this.cursor(false);
+        for (const c of str) {
+            if (buf.y >= buf.printViewBottom) {
+                this.scroll();
+            }
+            if (c === "\t") {
+                buf.x = Math.floor((buf.x + 14) / 14) * 14;
+                if (buf.x >= this.cols) {
+                    buf.x = 0;
+                    this.newline();
+                }
+            } else if (c === "\n" || c === "\r") {
+                this.newline();
+            } else {
+                const ch = c.charCodeAt(0);
+                buf.buffer.drawChar(buf.x, buf.y, ch, buf.fgcolor, buf.bgcolor, this.charmap, this.textViewport);
+                this.dirty = true;
+                buf.x += 1;
+                if (buf.x === this.cols) {
+                    this.newline();
+                }
+            }
+        }
+    }
 
     private updateViewTransform() {
         const [x1, y1, x2, y2] = this.viewCoordinateBox ? this.viewCoordinateBox : [0, 0, this.width, this.height];

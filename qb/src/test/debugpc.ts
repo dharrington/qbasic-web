@@ -13,79 +13,136 @@
 // limitations under the License.
 
 import * as vm from "../vm";
+import { BasicPC, IInputBuffer } from "../basicpc";
+
+class InjectedInput {
+    public line: string;
+    public inkey: string;
+}
+export class DebugInput implements IInputBuffer {
+    private remainingInput: Array<InjectedInput> = [];
+    addLine(line: string) {
+        const input = new InjectedInput();
+        input.line = line + '\r';
+        this.remainingInput.push(input);
+    }
+    addInkey(code: string) {
+        const input = new InjectedInput();
+        input.inkey = code;
+        this.remainingInput.push(input);
+    }
+
+    setInputEnabled(enabled: boolean) { }
+    inkey(): string {
+        if (this.remainingInput.length) {
+            const input = this.remainingInput[0];
+            if (input.line) {
+                const key = input.line[0];
+                if (input.line.length === 1) {
+                    this.remainingInput.shift();
+                } else {
+                    input.line = input.line.substr(1);
+                }
+                return key;
+            } else {
+                input.inkey === '\r';
+                const key = input.inkey;
+                this.remainingInput.shift();
+                return key;
+            }
+        }
+        return "";
+    }
+    lineInput(onChanged: (text: string, done: boolean) => void) {
+        while (this.remainingInput.length) {
+            const input = this.remainingInput[0];
+            if (input.line) {
+                this.remainingInput.shift();
+                onChanged(input.line + '\r', true);
+                return;
+            } else {
+                const done = input.inkey === '\r';
+                if (done) {
+                    this.remainingInput.shift();
+                }
+                onChanged(input.inkey, done);
+                if (done) return;
+            }
+        }
+        throw new Error("input exhausted");
+    }
+    inkeyWait(chars: number, done: (result: string) => void) {
+        let result = '';
+        while (!this.isEmpty()) {
+            const key = this.inkey();
+            if (key != '') {
+                result += key;
+                chars--;
+                if (chars === 0) {
+                    done(result);
+                    return;
+                }
+            }
+        }
+        throw new Error("input exhausted");
+    }
+    destroy() { }
+
+    private isEmpty() { return this.remainingInput.length === 0; }
+}
 
 // A virtual PC used for running QBasic programs without a real user interface. Primarily used for testing.
-export class DebugPC implements vm.IVirtualPC {
-    public textOutput: string = "";
+export class DebugPC extends BasicPC {
+    public textOutput: string;
     public echo: boolean;
-    public inputResult: string[] = [];
-    public graphicCalls: string[] = [];
-    private nextInput = 0;
+    public inputResult: string[];
+    public graphicCalls: string[];
+    public debugInput: DebugInput;
+    private nextInput;
+    constructor() {
+        const debugInput = new DebugInput();
+        super(debugInput);
+        this.debugInput = debugInput;
+        this.nextInput = 0;
+        this.inputResult = [];
+        this.graphicCalls = [];
+        this.textOutput = "";
+    }
     print(text: string) {
+        super.print(text);
         if (this.echo) console.log(text);
         this.textOutput += text;
     }
-    input(complete: (text: string) => void) {
-        if (this.nextInput >= this.inputResult.length) complete("");
-        else complete(this.inputResult[this.nextInput++]);
-    }
-    setForeColor(fc: number) { }
-    setBackColor(bc: number) { }
-    foreColor() { return 0; }
-    backColor() { return 0; }
     pset(x: number, y: number, color?: number) {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`PSET ${x} ${y}${colorStr}`);
+        super.pset(x, y, color);
     }
     point(x: number, y: number): number {
         this.graphicCalls.push(`POINT ${x} ${y}`);
-        return 0;
+        return super.point(x, y);
     }
     line(x1: number, y1: number, x2: number, y2: number, color: number | undefined, lineType: vm.LineType, style: number) {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`LINE ${x1} ${y1} ${x2} ${y2}${colorStr}`);
+        super.line(x1, y1, x2, y2, color, lineType, style);
     }
-    circle(x: number, y: number, radius: number, color: number | undefined) {
+    circle(x: number, y: number, radius: number, color: number | undefined, start: number, end: number, aspect: number) {
         const colorStr = color !== undefined ? `${color}` : "NA";
         this.graphicCalls.push(`CIRCLE ${x} ${y} ${radius} ${colorStr}`);
+        super.circle(x, y, radius, color, start, end, aspect);
     }
     paint(x: number, y: number, paintColor: number | undefined, borderColor: number | undefined) {
         const paintColorStr = paintColor !== undefined ? `${paintColor}` : "NA";
         const borderColorStr = borderColor !== undefined ? `${borderColor}` : "NA";
         this.graphicCalls.push(`PAINT ${x} ${y} ${paintColorStr} ${borderColorStr}`);
+        super.paint(x, y, paintColor, borderColor);
     }
     draw(currentX: number, currentY: number, instructions: vm.DrawInstruction[]) {
         const text = instructions.map((inst) => {
             return [vm.DrawInstructionID[inst.id], inst.a, inst.b, inst.c, (inst.noDraw ? "nodraw" : "") + (inst.returnWhenDone ? "returnWhenDone" : "")].join(",");
         }).join("; ");
         this.graphicCalls.push(`DRAW ${text}`);
+        super.draw(currentX, currentY, instructions);
     }
-    locate(x?: number, y?: number) { }
-    screen(id: number) { }
-    resetPalette() { }
-    setPaletteAttribute(attr: number, color: number) { }
-    sleep(delay: number, done) {
-        done();
-    }
-    inkey(): string { return ""; }
-    inkeyWait(n: number, callback: (result: string) => void) {
-        callback("");
-    }
-    cls() { }
-    clsGraphics() { }
-    clsText() { }
-    getGraphics(x1: number, y1: number, x2: number, y2: number, maxBytes: number): Uint8Array | undefined {
-        return undefined;
-    }
-    putGraphics(x: number, y: number, data: Uint8Array, actionVerb: vm.GraphicsAction) {
-    }
-    screenLines(): number {
-        return 25;
-    }
-    setViewPrint(top: number, bottom: number) { }
-    setView(x1: number, y1: number, x2: number, y2: number, relative: boolean) {
-    }
-    setViewCoordinates(x1: number, y1: number, x2: number, y2: number, relative: boolean) { }
-    mapToScreen(x: number, y: number): [number, number] { return [0, 0]; }
-    mapFromScreen(x: number, y: number): [number, number] { return [0, 0]; }
 }
