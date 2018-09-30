@@ -301,7 +301,7 @@ export const kScreenPalettes: Map<number, number[][]> = new Map([
 ]);
 
 export const kScreenDims: Map<number, number[]> = new Map([
-    [0, [640, 480]],
+    [0, [640, 400]],
     [1, [320, 200]],
     [2, [640, 200]],
     [7, [320, 200]],
@@ -320,6 +320,11 @@ export class Palette {
         this.colors[attr * 3 + 0] = rgb[0];
         this.colors[attr * 3 + 1] = rgb[1];
         this.colors[attr * 3 + 2] = rgb[2];
+    }
+    getEntry(attr: number): [number, number, number] {
+        return [this.colors[attr * 3 + 0],
+        this.colors[attr * 3 + 1],
+        this.colors[attr * 3 + 2]];
     }
     setPalette(pal: number[][]) {
         for (let i = 0; i < 256; i++) {

@@ -9,10 +9,11 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/pngjs": "^3.3.2",
     "fs": "0.0.1-security",
-    "typescript": "^2.9.2"
-  },
-  "devDependencies": {
+    "typescript": "^2.9.2",
+    "blink-diff": "^1.0.13",
+    "pngjs": "^3.3.3",
     "@types/node": "^10.5.3"
   }
 }

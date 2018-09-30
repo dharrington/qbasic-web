@@ -70,6 +70,7 @@ export interface IVirtualPC {
     cls();
     clsGraphics();
     clsText();
+    programDone();
 }
 
 export enum DrawInstructionID {
@@ -251,6 +252,7 @@ export class NullPC implements IVirtualPC {
     setViewCoordinates() { throw new Error("not implemented"); }
     mapToScreen(x: number, y: number): [number, number] { throw new Error("not implemented"); }
     mapFromScreen(x: number, y: number): [number, number] { throw new Error("not implemented"); }
+    programDone() { }
 }
 
 function convertNumber(n: number, baseType: BaseType): number | string {
@@ -1112,6 +1114,7 @@ ${listing}
         if (this.onException) { this.onException(err, this.currentLine()); }
     }
     end() {
+        this.vpc.programDone();
         this.done = true;
         if (this.onEnd) this.onEnd();
     }

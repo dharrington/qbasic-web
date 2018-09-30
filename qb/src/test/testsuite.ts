@@ -19,6 +19,7 @@ import { DebugPC } from "./debugpc";
 
 import * as fs from "fs";
 import * as path from "path";
+import * as BlinkDiff from "../../node_modules/blink-diff/index";
 
 let passCount = 0;
 let failCount = 0;
@@ -28,6 +29,8 @@ class Expectation {
     public compileErrorLines: number[] = [];
     public psets: Array<{ x, y, color }> = [];
     public graphics: string[];
+    public compareScreenshotTo = "";
+    public screenshotDiffThreshold: number;
     constructor() { }
 }
 function scanREMs(programText: string, command: string): string[] {
@@ -52,7 +55,7 @@ function firstMismatchedLine(got: string, want: string): number | undefined {
     return undefined;
 }
 
-function testProgram(programPath: string) {
+async function testProgram(programPath: string) {
     console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
@@ -69,6 +72,15 @@ function testProgram(programPath: string) {
     for (const inputLine of scanREMs(fileText, "input")) {
         pc.debugInput.addLine(inputLine);
     }
+    const compareScreenshot = scanREMs(fileText, "compare_screenshot");
+    if (compareScreenshot.length) {
+        exp.screenshotDiffThreshold = parseFloat(compareScreenshot[0]);
+        if (exp.screenshotDiffThreshold > .5 || exp.screenshotDiffThreshold < 0) {
+            console.log(`compare_screenshot invalid threshold: ${compareScreenshot[0]}`);
+            failCount++;
+        }
+        exp.compareScreenshotTo = path.join(path.dirname(programPath), path.basename(programPath, ".bas") + ".png");
+    }
     const fileLines = fileText.split("\n");
     for (let i = 0; i < fileLines.length; i++) {
         if (/'COMPILE_ERROR/.test(fileLines[i])) {
@@ -82,16 +94,17 @@ function testProgram(programPath: string) {
         programText = parts[0];
         exp.output = parts[1];
     }
-    runSuccess(programText, exp, pc);
+    await runSuccess(programText, exp, pc);
 }
-function testCases(caseDir = process.argv[2]) {
+
+async function testCases(caseDir = process.argv[2]) {
     for (const f of fs.readdirSync(caseDir)) {
         const fPath = path.join(caseDir, f);
         const stat = fs.statSync(fPath);
         if (stat.isDirectory()) {
-            testCases(fPath);
+            await testCases(fPath);
         } else if (path.extname(fPath) === ".bas") {
-            testProgram(fPath);
+            await testProgram(fPath);
         }
     }
 }
@@ -105,7 +118,24 @@ function addLineNumbersToSource(source: string): string {
     }
     return lines.join("\n");
 }
-function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
+
+
+function diffScreenshot(diffThreshold, got, want, diff) {
+    var diff = new BlinkDiff({
+        imageAPath: got,
+        imageBPath: want,
+
+        thresholdType: BlinkDiff.THRESHOLD_PERCENT,
+        threshold: diffThreshold, // 1% threshold
+
+        imageOutputPath: diff,
+    });
+
+    const result = diff.runSync();
+    return diff.hasPassed(result.code);
+}
+
+async function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
     const stepQuota = 10000;
 
     const tokens = lex(program);
@@ -176,6 +206,16 @@ function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
             console.log(`graphics output not correct:\n--- got ---\n${got}\n--- want ---\n${want}\n`);
         }
     }
+    if (!failed && exp.compareScreenshotTo) {
+        const base = path.join(path.dirname(exp.compareScreenshotTo), path.basename(exp.compareScreenshotTo, ".png"));
+        const got = path.join(base + ".got.png");
+        const diff = path.join(base + ".diff.png");
+        await pc.saveScreenshot(got);
+        if (!diffScreenshot(exp.screenshotDiffThreshold, got, exp.compareScreenshotTo, diff)) {
+            failed = true;
+            console.log(`screen diff failed: ${diff}`);
+        }
+    }
     if (!failed) {
         passCount++;
         return;
@@ -202,10 +242,10 @@ ${exe.debugDump()}`);
     passCount++;
 }
 
-testCases();
-
-if (failCount > 0) {
-    console.log(`--FAIL-- ${failCount} tests fail, ${passCount} tests pass`);
-} else {
-    console.log(`--PASS-- All ${passCount} tests pass`);
-}
+testCases().then(() => {
+    if (failCount > 0) {
+        console.log(`--FAIL-- ${failCount} tests fail, ${passCount} tests pass`);
+    } else {
+        console.log(`--PASS-- All ${passCount} tests pass`);
+    }
+})

@@ -14,11 +14,28 @@
 
 import * as vm from "../vm";
 import { BasicPC, IInputBuffer } from "../basicpc";
+import { Buffer, Palette } from "../screen";
+import { PNG } from "pngjs";
+import { createWriteStream } from "fs";
 
 class InjectedInput {
     public line: string;
     public inkey: string;
 }
+
+function screenToPNG(buf: Buffer, pal: Palette) {
+    let offset = 0;
+    const p = new PNG({ colorType: 2, bitDepth: 8, inputHasAlpha: false, filterType: 4, width: buf.width, height: buf.height });
+    for (let y = 0; y < buf.height; y++) {
+        for (let x = 0; x < buf.width; x++) {
+            const alias = buf.pget(x, y);
+            [p.data[offset], p.data[offset + 1], p.data[offset + 2]] = pal.getEntry(alias);
+            offset += 3;
+        }
+    }
+    return p;
+}
+
 export class DebugInput implements IInputBuffer {
     private remainingInput: Array<InjectedInput> = [];
     addLine(line: string) {
@@ -144,5 +161,15 @@ export class DebugPC extends BasicPC {
         }).join("; ");
         this.graphicCalls.push(`DRAW ${text}`);
         super.draw(currentX, currentY, instructions);
+    }
+
+    async saveScreenshot(fileName: string) {
+        const p = new Promise((notify) => {
+            const png = screenToPNG(this.vbuf().buffer, this.palette());
+            png.pack().pipe(createWriteStream(fileName)).on("finish", () => {
+                notify();
+            });
+        });
+        return p;
     }
 }

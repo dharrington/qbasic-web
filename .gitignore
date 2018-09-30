@@ -2,3 +2,5 @@ node_modules/
 built/
 dist/
 .vscode/
+*.got.png
+*.diff.png

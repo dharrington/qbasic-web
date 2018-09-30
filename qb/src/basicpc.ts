@@ -30,7 +30,7 @@ class BufferState {
     public x: number = 0;
     public y: number = 0;
     public bgcolor: number = 0;
-    public fgcolor: number = 15;
+    public fgcolor: number = 7;
     public printViewTop = 0;
     public printViewBottom = 24;
     constructor(public buffer: Buffer) { }
@@ -74,6 +74,17 @@ export class BasicPC implements vm.IVirtualPC {
         this.screen(0, undefined, undefined, undefined);
         this.charmap = chars.get8x16();
         this.charHeight = this.charmap.height;
+    }
+
+    programDone() {
+        const buf = this.vbuf();
+        buf.x = 0;
+        buf.y = this.rows - 1;
+        const message = "Press any key to continue";
+        this.drawChars(message, true);
+        for (let i = 0; i < this.cols - message.length; i++) {
+            this.drawChars(" ", true);
+        }
     }
 
     setInputEnabled(enabled: boolean) {
@@ -495,14 +506,15 @@ export class BasicPC implements vm.IVirtualPC {
         return [(x - this.viewTranslateX) / this.viewScalingX, (y - this.viewTranslateY) / this.viewScalingY];
     }
 
-    palette(): Palette { return this.pal; }
+    protected palette(): Palette { return this.pal; }
 
-    private drawChars(str: string) {
+    private drawChars(str: string, disableScroll?: boolean) {
         const buf = this.abuf();
         this.cursor(false);
         for (const c of str) {
             if (buf.y >= buf.printViewBottom) {
-                this.scroll();
+                if (disableScroll && buf.y == buf.printViewBottom) {
+                } else this.scroll();
             }
             if (c === "\t") {
                 buf.x = Math.floor((buf.x + 14) / 14) * 14;
@@ -518,7 +530,7 @@ export class BasicPC implements vm.IVirtualPC {
                 this.dirty = true;
                 buf.x += 1;
                 if (buf.x === this.cols) {
-                    this.newline();
+                    if (!disableScroll) this.newline();
                 }
             }
         }
@@ -562,7 +574,7 @@ export class BasicPC implements vm.IVirtualPC {
     private abuf(): BufferState {
         return this.screenBuffers[this.activeBufferIndex];
     }
-    vbuf(): BufferState {
+    protected vbuf(): BufferState {
         return this.screenBuffers[this.displayedBufferIndex];
     }
 }
