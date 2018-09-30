@@ -41,6 +41,7 @@ class AssertionError extends Error {
 // The virtual computer on which the VM executes.
 export interface IVirtualPC {
     print(text: string);
+    printNewline();
     input(completed: (text: string) => void);
     inkeyWait(n: number, callback: (result: string) => void);
     setForeColor(fc: number);
@@ -223,6 +224,7 @@ function parseDrawCommand(cmd: string): DrawInstruction[] | undefined {
 
 export class NullPC implements IVirtualPC {
     print(text: string) { throw new Error("not implemented"); }
+    printNewline() { throw new Error("not implemented"); }
     input(completed: (text: string) => void) { throw new Error("not implemented"); }
     setForeColor(fc: number) { throw new Error("not implemented"); }
     foreColor() { throw new Error("not implemented"); return 0; }
@@ -317,6 +319,7 @@ export enum InstructionID {
     NOT, // S S
     LOGICNOT, // S S
     PRINT, // S
+    PRINT_NEWLINE,
     LOCATE, // S|undefined [ S|undefined ]
     ABS, // S S
     MID, // S S S [ S ]
@@ -771,6 +774,7 @@ export class Instruction {
             case InstructionID.NOT:  // S S
             case InstructionID.LOGICNOT:  // S S
             case InstructionID.PRINT:  // S
+            case InstructionID.PRINT_NEWLINE: // 
             case InstructionID.LOCATE:  // S|undefined [ S|undefined ]
             case InstructionID.ABS:  // S S
             case InstructionID.MID:  // S S S [ S ]
@@ -1331,6 +1335,10 @@ ${listing}
                         break;
                     }
                 }
+                break;
+            }
+            case InstructionID.PRINT_NEWLINE: {
+                this.vpc.printNewline();
                 break;
             }
             case InstructionID.LOCATE: {

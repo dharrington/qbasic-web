@@ -736,7 +736,7 @@ export class CodegenCtx implements ICtx {
                     }
                 }
                 if (!endsWithSeparator) {
-                    this.write(vm.InstructionID.PRINT, Val.newStringLiteral("\n"));
+                    this.write(vm.InstructionID.PRINT_NEWLINE);
                 }
                 return undefined;
             }

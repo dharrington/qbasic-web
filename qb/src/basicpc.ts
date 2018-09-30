@@ -95,8 +95,9 @@ export class BasicPC implements vm.IVirtualPC {
     }
 
     newline() {
-        this.abuf().x = 0;
-        this.abuf().y += 1;
+        const buf = this.abuf();
+        buf.x = 0;
+        buf.y += 1;
     }
     setDims(w: number, h: number, charWidth: number, charHeight: number, bufferCount: number) {
         this.viewCoordinateBox = undefined;
@@ -124,11 +125,19 @@ export class BasicPC implements vm.IVirtualPC {
     cursor(show: boolean) { }
     locate(y?: number, x?: number) {
         const buf = this.abuf();
-        if (x !== undefined) buf.x = Math.max(0, Math.min(Math.floor(x), this.cols - 1));
-        if (y !== undefined) buf.y = Math.max(0, Math.min(Math.floor(y), this.rows - 1));
+        if (x !== undefined) buf.x = Math.max(0, Math.min(Math.floor(x - 1), this.cols - 1));
+        if (y !== undefined) buf.y = Math.max(0, Math.min(Math.floor(y - 1), this.rows - 1));
+    }
+
+    printNewline() {
+        this.newline();
     }
 
     print(str: string) {
+        const charsRemain = this.cols - this.abuf().x;
+        if (str.length > charsRemain && this.abuf().x > 0) {
+            this.newline();
+        }
         this.drawChars(str);
     }
 
@@ -517,21 +526,22 @@ export class BasicPC implements vm.IVirtualPC {
                 } else this.scroll();
             }
             if (c === "\t") {
-                buf.x = Math.floor((buf.x + 14) / 14) * 14;
-                if (buf.x >= this.cols) {
+                const tabSize = 8;
+                buf.x = Math.floor((buf.x + tabSize) / tabSize) * tabSize;
+                if (buf.x > this.cols) {
                     buf.x = 0;
                     this.newline();
                 }
             } else if (c === "\n" || c === "\r") {
                 this.newline();
             } else {
+                if (buf.x >= this.cols) {
+                    this.newline();
+                }
                 const ch = c.charCodeAt(0);
                 buf.buffer.drawChar(buf.x, buf.y, ch, buf.fgcolor, buf.bgcolor, this.charmap, this.textViewport);
                 this.dirty = true;
                 buf.x += 1;
-                if (buf.x === this.cols) {
-                    if (!disableScroll) this.newline();
-                }
             }
         }
     }

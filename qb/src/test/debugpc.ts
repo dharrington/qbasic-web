@@ -130,6 +130,11 @@ export class DebugPC extends BasicPC {
         if (this.echo) console.log(text);
         this.textOutput += text;
     }
+    printNewline() {
+        super.printNewline();
+        if (this.echo) console.log("\n");
+        this.textOutput += "\n";
+    }
     pset(x: number, y: number, color?: number) {
         const colorStr = color !== undefined ? ` ${color}` : "";
         this.graphicCalls.push(`PSET ${x} ${y}${colorStr}`);
