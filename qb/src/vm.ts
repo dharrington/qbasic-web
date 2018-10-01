@@ -992,6 +992,12 @@ function formatFloatSingle(n: number): string {
     return n.toPrecision(7);
 }
 
+function formatFloatDouble(n: number): string {
+    const s = "" + n;
+    if (s.length < 15) return s;
+    return n.toPrecision(16);
+}
+
 function fixupNumberForPrinting(n: string): string {
     if (n.startsWith("-0.")) n = "-." + n.substr(2);
     else if (n.startsWith("0.")) n = n.substr(1);
@@ -1324,6 +1330,10 @@ ${listing}
                 switch (argVal.type.type) {
                     case BaseType.kSingle: {
                         this.vpc.print(fixupNumberForPrinting(formatFloatSingle(argVal.val as number)));
+                        break;
+                    }
+                    case BaseType.kDouble: {
+                        this.vpc.print(fixupNumberForPrinting(formatFloatDouble(argVal.val as number)));
                         break;
                     }
                     case BaseType.kString: {
