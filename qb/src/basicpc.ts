@@ -111,12 +111,14 @@ export class BasicPC implements vm.IVirtualPC {
         this.displayedBufferIndex = 0;
         this.screenBuffers = [];
         for (let i = 0; i < bufferCount; i++) {
-            this.screenBuffers.push(new BufferState(new Buffer(this.width, this.height)));
+            const b = new BufferState(new Buffer(this.width, this.height));
+            b.fgcolor = defaultColor;
+            this.screenBuffers.push(b);
         }
         this.graphicsViewport = this.abuf().buffer.fullViewport.copy();
         this.textViewport = this.abuf().buffer.fullViewport.copy();
         this.abuf().printViewTop = 0;
-        this.abuf().printViewBottom = this.rows - 1;
+        this.abuf().printViewBottom = this.rows - 2;
         this.dimsChanged();
     }
 
@@ -131,6 +133,10 @@ export class BasicPC implements vm.IVirtualPC {
 
     printNewline() {
         this.newline();
+        const buf = this.abuf();
+        if (buf.y > buf.printViewBottom) {
+            this.scroll();
+        }
     }
 
     print(str: string) {
@@ -457,7 +463,8 @@ export class BasicPC implements vm.IVirtualPC {
                 case 9: bufferCount = 2; break;
             }
             if (id !== this.currentScreen) {
-                this.setDims(w, h, this.charmap.width, this.charmap.height, bufferCount);
+                const defaultColor = (id === 0) ? 7 : 15;
+                this.setDims(w, h, this.charmap.width, this.charmap.height, bufferCount, defaultColor);
                 this.pal.setPalette(S.kScreenPalettes.get(id) as any);
                 this.currentScreen = id;
             }
@@ -521,9 +528,8 @@ export class BasicPC implements vm.IVirtualPC {
         const buf = this.abuf();
         this.cursor(false);
         for (const c of str) {
-            if (buf.y >= buf.printViewBottom) {
-                if (disableScroll && buf.y == buf.printViewBottom) {
-                } else this.scroll();
+            if (buf.y > buf.printViewBottom) {
+                if (!disableScroll) this.scroll();
             }
             if (c === "\t") {
                 const tabSize = 8;
