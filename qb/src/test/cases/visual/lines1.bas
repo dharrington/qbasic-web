@@ -1,0 +1,19 @@
+REM compare_screenshot 0.0
+
+SCREEN 13
+
+FOR I = 0 TO 50
+LINE (3,3+I*2)-STEP(50,I), I
+NEXT I
+
+FOR I = 0 TO 50
+LINE (56,3+I*3)-STEP(50,-I), I
+NEXT I
+
+FOR I = 0 TO 50
+LINE (290,3+I*2)-STEP(-50,I), 15
+NEXT I
+
+FOR I = 0 TO 50
+LINE (237,3+I*3)-STEP(-50,-I), 15
+NEXT I

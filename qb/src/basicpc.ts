@@ -98,8 +98,9 @@ export class BasicPC implements vm.IVirtualPC {
         const buf = this.abuf();
         buf.x = 0;
         buf.y += 1;
+
     }
-    setDims(w: number, h: number, charWidth: number, charHeight: number, bufferCount: number) {
+    setDims(w: number, h: number, charWidth: number, charHeight: number, bufferCount: number, defaultColor: number) {
         this.viewCoordinateBox = undefined;
         this.charHeight = charHeight;
         this.width = w;

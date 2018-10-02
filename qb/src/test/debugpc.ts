@@ -16,7 +16,7 @@ import * as vm from "../vm";
 import { BasicPC, IInputBuffer } from "../basicpc";
 import { Buffer, Palette } from "../screen";
 import { PNG } from "pngjs";
-import { createWriteStream } from "fs";
+import { writeFileSync } from "fs";
 
 class InjectedInput {
     public line: string;
@@ -168,13 +168,7 @@ export class DebugPC extends BasicPC {
         super.draw(currentX, currentY, instructions);
     }
 
-    async saveScreenshot(fileName: string) {
-        const p = new Promise((notify) => {
-            const png = screenToPNG(this.vbuf().buffer, this.palette());
-            png.pack().pipe(createWriteStream(fileName)).on("finish", () => {
-                notify();
-            });
-        });
-        return p;
+    saveScreenshot(fileName: string) {
+        PNG.sync.write(screenToPNG(this.vbuf().buffer, this.palette()));
     }
 }

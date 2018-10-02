@@ -55,7 +55,7 @@ function firstMismatchedLine(got: string, want: string): number | undefined {
     return undefined;
 }
 
-async function testProgram(programPath: string) {
+function testProgram(programPath: string) {
     console.log(programPath);
     const buf = fs.readFileSync(programPath);
     const fileText = buf.toString();
@@ -94,20 +94,21 @@ async function testProgram(programPath: string) {
         programText = parts[0];
         exp.output = parts[1];
     }
-    await runSuccess(programText, exp, pc);
+    runSuccess(programText, exp, pc);
 }
 
-async function testCases(caseDir = process.argv[2]) {
+function testCases(caseDir = process.argv[2]) {
     for (const f of fs.readdirSync(caseDir)) {
         const fPath = path.join(caseDir, f);
         const stat = fs.statSync(fPath);
         if (stat.isDirectory()) {
-            await testCases(fPath);
+            testCases(fPath);
         } else if (path.extname(fPath) === ".bas") {
-            await testProgram(fPath);
+            testProgram(fPath);
         }
     }
 }
+
 function visualizeWhitespace(output: string): string {
     return output.replace(/ /g, String.fromCharCode(183));
 }
@@ -120,10 +121,12 @@ function addLineNumbersToSource(source: string): string {
 }
 
 
-function diffScreenshot(diffThreshold, got, want, diff) {
+function diffScreenshot(diffThreshold, got, want, diff): [boolean, number] {
     var diff = new BlinkDiff({
         imageAPath: got,
         imageBPath: want,
+        hShift: 0,
+        vShift: 0,
 
         thresholdType: BlinkDiff.THRESHOLD_PERCENT,
         threshold: diffThreshold, // 1% threshold
@@ -132,10 +135,11 @@ function diffScreenshot(diffThreshold, got, want, diff) {
     });
 
     const result = diff.runSync();
-    return diff.hasPassed(result.code);
+
+    return [diff.hasPassed(result.code), result.differences / (result.width * result.height)];
 }
 
-async function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
+function runSuccess(program: string, exp: Expectation, pc = new DebugPC()) {
     const stepQuota = 10000;
 
     const tokens = lex(program);
@@ -210,10 +214,11 @@ async function runSuccess(program: string, exp: Expectation, pc = new DebugPC())
         const base = path.join(path.dirname(exp.compareScreenshotTo), path.basename(exp.compareScreenshotTo, ".png"));
         const got = path.join(base + ".got.png");
         const diff = path.join(base + ".diff.png");
-        await pc.saveScreenshot(got);
-        if (!diffScreenshot(exp.screenshotDiffThreshold, got, exp.compareScreenshotTo, diff)) {
+        pc.saveScreenshot(got);
+        const [pass, diffFraction] = diffScreenshot(exp.screenshotDiffThreshold, got, exp.compareScreenshotTo, diff);
+        if (!pass) {
             failed = true;
-            console.log(`screen diff failed: ${diff}`);
+            console.log(`screen diff failed with ${diffFraction} difference: ${diff}`);
         }
     }
     if (!failed) {
@@ -242,10 +247,10 @@ ${exe.debugDump()}`);
     passCount++;
 }
 
-testCases().then(() => {
-    if (failCount > 0) {
-        console.log(`--FAIL-- ${failCount} tests fail, ${passCount} tests pass`);
-    } else {
-        console.log(`--PASS-- All ${passCount} tests pass`);
-    }
-})
+testCases();
+
+if (failCount > 0) {
+    console.log(`--FAIL-- ${failCount} tests fail, ${passCount} tests pass`);
+} else {
+    console.log(`--PASS-- All ${passCount} tests pass`);
+}

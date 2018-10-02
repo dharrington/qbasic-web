@@ -214,7 +214,7 @@ export class Buffer {
     private linex(x1: number, y1: number, x2: number, y2: number, color: number, style: number, mask: Viewport) {
         const deltax = x2 - x1;
         const deltay = y2 - y1;
-        const deltaerr = Math.abs(deltay / deltax);
+        const deltaerr = Math.fround(Math.abs(deltay / deltax));
         let error = 0.0;
         let y = y1;
         let styleIndex = 0;
@@ -222,8 +222,8 @@ export class Buffer {
             if (style & bitMod16(styleIndex++)) {
                 this.pset(x, y, color, mask);
             }
-            error += deltaerr;
-            if (error >= 0.5) {
+            error = Math.fround(error + deltaerr);
+            if (error >= 0.25) {
                 y = y + Math.sign(deltay);
                 error = error - 1;
             }
@@ -231,8 +231,9 @@ export class Buffer {
     }
     private liney(x1: number, y1: number, x2: number, y2: number, color: number, style: number, mask: Viewport) {
         const deltax = x2 - x1;
+        const errorThreshold = deltax > 0 ? .25 : .75;
         const deltay = y2 - y1;
-        const deltaerr = Math.abs(deltax / deltay);
+        const deltaerr = Math.fround(Math.abs(deltax / deltay));
         let error = 0.0;
         let x = x1;
         let styleIndex = 0;
@@ -240,8 +241,8 @@ export class Buffer {
             if (style & bitMod16(styleIndex++)) {
                 this.pset(x, y, color, mask);
             }
-            error += deltaerr;
-            if (error >= 0.5) {
+            error = Math.fround(error + deltaerr);
+            if (error > errorThreshold) {
                 x = x + Math.sign(deltax);
                 error = error - 1;
             }
