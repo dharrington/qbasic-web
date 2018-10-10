@@ -1529,7 +1529,7 @@ export class CodegenCtx implements ICtx {
         if (option) {
             args[5] = option;
         }
-        if (style !== null) {
+        if (style !== undefined) {
             args[6] = style;
         }
         this.write(vm.InstructionID.LINE, ...args);

@@ -1920,17 +1920,16 @@ class Parser implements ILocator {
                 color = this.numericExpr();
                 if (!color) return;
             }
-            if (this.tok().isOp(",")) {
-                this.next();
+            if (this.nextIf(",")) {
                 if (this.nextIf("B")) {
                     option = "B";
                 } else if (this.nextIf("BF")) {
                     option = "BF";
                 } else if (!this.tok().isOp(",")) {
                     this.error("expected B, BF, or ','");
+                    return;
                 }
-                if (this.tok().isOp(",")) {
-                    this.next();
+                if (this.nextIf(",")) {
                     style = this.numericExpr();
                     if (!style) return;
                 }

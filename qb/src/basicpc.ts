@@ -575,9 +575,8 @@ export class BasicPC implements vm.IVirtualPC {
         const Mneg = (this.viewCoordinateInverted ? -1 : 1);
         this.viewScalingX = viewWidth / coordWidth;
         this.viewScalingY = viewHeight / coordHeight * Mneg;
-
-        this.viewTranslateX = -(viewWidth / coordWidth) * Math.min(x1, x2) + Ox;
-        this.viewTranslateY = -(viewHeight / coordHeight) * Math.min(y1, y2) + Oy;
+        this.viewTranslateX = (-Math.min(x1, x2)) / coordWidth * viewWidth + Ox;
+        this.viewTranslateY = (-Math.min(y1, y2)) / coordHeight * viewHeight * Mneg + Oy;
     }
 
     private toScreenSpace(x, y): [number, number] {

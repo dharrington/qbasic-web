@@ -202,14 +202,14 @@ export class Buffer {
         const deltay = y2 - y1;
         if (Math.abs(deltax) >= Math.abs(deltay)) {
             if (x1 > x2) {
-                return this.linex(x2, y2, x1, y1, color, reverse16bit(style), mask);
+                return this.linex(x2, y2, x1, y1, color, style, mask);
             }
-            return this.linex(x1, y1, x2, y2, color, style, mask);
+            return this.linex(x1, y1, x2, y2, color, reverse16bit(style), mask);
         }
         if (y1 > y2) {
-            return this.liney(x2, y2, x1, y1, color, reverse16bit(style), mask);
+            return this.liney(x2, y2, x1, y1, color, style, mask);
         }
-        return this.liney(x1, y1, x2, y2, color, style, mask);
+        return this.liney(x1, y1, x2, y2, color, reverse16bit(style), mask);
     }
     private linex(x1: number, y1: number, x2: number, y2: number, color: number, style: number, mask: Viewport) {
         const deltax = x2 - x1;

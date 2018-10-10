@@ -725,10 +725,10 @@ export class Instruction {
                 return "baseType";
             case InstructionID.RESTORE:  // DP
                 return "DP";
-            case InstructionID.LINE:  // S S S S [S [OptionString [StyleString]]]
+            case InstructionID.LINE:  // S S S S [S [OptionString [S]]
                 if (offset <= 4) return "S";
                 if (offset === 5) return "option";
-                return "style";
+                return "S";
             case InstructionID.DECLARE:  // S V
                 if (offset === 0) return "S";
                 return "V";

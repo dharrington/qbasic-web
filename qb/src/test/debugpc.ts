@@ -25,12 +25,13 @@ class InjectedInput {
 
 function screenToPNG(buf: Buffer, pal: Palette) {
     let offset = 0;
-    const p = new PNG({ colorType: 2, bitDepth: 8, inputHasAlpha: false, filterType: 4, width: buf.width, height: buf.height });
+    const p = new PNG({ filterType: 0, width: buf.width, height: buf.height });
     for (let y = 0; y < buf.height; y++) {
         for (let x = 0; x < buf.width; x++) {
             const alias = buf.pget(x, y);
             [p.data[offset], p.data[offset + 1], p.data[offset + 2]] = pal.getEntry(alias);
-            offset += 3;
+            p.data[offset + 3] = 0xff;
+            offset += 4;
         }
     }
     return p;
@@ -169,6 +170,6 @@ export class DebugPC extends BasicPC {
     }
 
     saveScreenshot(fileName: string) {
-        PNG.sync.write(screenToPNG(this.vbuf().buffer, this.palette()));
+        writeFileSync(fileName, PNG.sync.write(screenToPNG(this.vbuf().buffer, this.palette())));
     }
 }
